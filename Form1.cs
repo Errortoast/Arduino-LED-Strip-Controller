@@ -11,7 +11,6 @@ using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Dsp;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace Arduino_LED_Strip_Controller
 {
@@ -21,22 +20,28 @@ namespace Arduino_LED_Strip_Controller
         private List<MMDevice> renderDevices = new List<MMDevice>();
         private List<MMDevice> inputDevices = new List<MMDevice>();
 
-        const int bassThreshold = 50;
-
-        float smoothedBrightness = 0;
-        float smoothingFactor = 0.6f; // Higher = smoother
-
-        // AUDIO VARIABLES FOR MUSIC SYNC
         private MMDeviceEnumerator deviceEnumerator;
-        private WasapiLoopbackCapture audioCapture; // Using loopback capture on the selected audio device
-        private BufferedWaveProvider bufferedWaveProvider;
 
-        // FFT and audio processing parameters
-        private const int fftSize = 2048;   // Must be a power of 2
-        private Complex[] fftBuffer;
-        private float[] precomputedHamming;
-        private float[] sampleBuffer;
-        private int bufferOffset = 0;
+        float bassSmoothing = 0.5f;
+        float midSmoothing = 0.5f;
+        float trebleSmoothing = 0.5f;
+
+        float bassBoost = 1.2f;
+
+        int bassFrequency = 250; //in Hz
+        int midFrequency = 1500;
+        int trebleFrequency = 16000;
+
+        private WasapiLoopbackCapture loopbackCapture;
+        private WaveInEvent waveIn;
+        private float[] fftBuffer = new float[256];
+        private Complex[] fftComplex = new Complex[256];
+        private int fftSize = 256;
+        private bool musicSyncEnabled = false;
+        private object fftLock = new object();
+
+        private float bassEMA = 0, midEMA = 0, trebleEMA = 0;
+        private float bassGain = 0.1f, midGain = 0.2f, trebleGain = 0.4f;
         #endregion
 
         private SerialPort serialPort;
@@ -47,7 +52,6 @@ namespace Arduino_LED_Strip_Controller
         int defaultMonitor = 0;
         int defaultAudioInput = 0;
         int defaultAudioOutput = 0;
-        bool useAudioPassthrough = false;
 
         public Form1()
         {
@@ -56,6 +60,8 @@ namespace Arduino_LED_Strip_Controller
 
         private void Form1_Load(object sender, EventArgs e)
         {
+            serialPort = new SerialPort();
+
             #region file
             //Read and apply settings
             if (!File.Exists(Application.StartupPath + "\\Settings.txt"))
@@ -89,12 +95,6 @@ namespace Arduino_LED_Strip_Controller
             #region audio
             deviceEnumerator = new MMDeviceEnumerator();
 
-            // Clear previous entries
-            audioInput.Items.Clear();
-            audioOutput.Items.Clear();
-            renderDevices.Clear();
-            inputDevices.Clear();
-
             // Get output (render) devices
             var outputDevices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
             foreach (var device in outputDevices)
@@ -110,20 +110,7 @@ namespace Arduino_LED_Strip_Controller
                 audioInput.Items.Add(device.FriendlyName);
                 inputDevices.Add(device);
             }
-
-            // FFT Initialization
-            precomputedHamming = new float[fftSize];
-            for (int i = 0; i < fftSize; i++)
-            {
-                // Precompute the Hamming window
-                precomputedHamming[i] = (float)FastFourierTransform.HammingWindow(i, fftSize);
-            }
-            fftBuffer = new Complex[fftSize];
-            sampleBuffer = new float[fftSize];
             #endregion
-
-            // Initialize serial port
-            serialPort = new SerialPort();
 
             #region combo boxes
             string[] ports = SerialPort.GetPortNames();
@@ -179,21 +166,25 @@ namespace Arduino_LED_Strip_Controller
 
         private void modeSelect_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (modeSelect.SelectedItem.ToString() == "Screen Sync")
+            string mode = modeSelect.SelectedItem.ToString();
+
+            if (mode == "Screen Sync")
             {
+                StopMusicSync();
                 ScreenCapturer.OnScreenUpdated += OnScreenUpdated;
                 ScreenCapturer.StartCapture(screenSelection.SelectedIndex);
             }
             else
             {
-                //stop screen capturing
                 ScreenCapturer.StopCapture();
-                //reset the background to white
+                ScreenCapturer.OnScreenUpdated -= OnScreenUpdated;
                 this.BackColor = DefaultBackColor;
             }
-            if (modeSelect.SelectedItem.ToString() == "Music Sync")
+
+            if (mode == "Music Sync")
             {
-                StartMusicSync();
+                bool useOutput = false; // toggle with checkbox later
+                StartMusicSync(useOutput);
             }
             else
             {
@@ -311,146 +302,121 @@ namespace Arduino_LED_Strip_Controller
             return (index >= 0 && index < renderDevices.Count) ? renderDevices[index] : null;
         }
 
-        /// <summary>
-        /// Starts the music sync by initializing the audio capture and optionally setting up passthrough.
-        /// </summary>
-        private void StartMusicSync()
+        private void StartMusicSync(bool useOutput)
         {
-            try
+            musicSyncEnabled = true;
+            StopMusicSync(); // Stop any previous capture
+
+            if (useOutput)
             {
-                // Use the selected input device for loopback capture.
-                var selectedDevice = GetSelectedOutputDevice();
-                if (selectedDevice == null)
+                var device = GetSelectedOutputDevice();
+                loopbackCapture = new WasapiLoopbackCapture(device);
+                loopbackCapture.DataAvailable += (s, e) =>
                 {
-                    MessageBox.Show("No audio input device selected.");
-                    return;
-                }
-
-                audioCapture = new WasapiLoopbackCapture(selectedDevice);
-                audioCapture.DataAvailable += AudioCapture_DataAvailable;
-                audioCapture.RecordingStopped += AudioCapture_RecordingStopped;
-
-                // Initialize FFT buffers
-                bufferOffset = 0;
-                Array.Clear(sampleBuffer, 0, sampleBuffer.Length);
-                audioCapture.StartRecording();
+                    ProcessFFT(e.Buffer, e.BytesRecorded);
+                };
+                loopbackCapture.StartRecording();
             }
-            catch (Exception ex)
+            else
             {
-                MessageBox.Show("Error starting music sync: " + ex.Message);
+                waveIn = new WaveInEvent
+                {
+                    DeviceNumber = audioInput.SelectedIndex,
+                    WaveFormat = new WaveFormat(44100, 1)
+                };
+                waveIn.DataAvailable += (s, e) =>
+                {
+                    ProcessFFT(e.Buffer, e.BytesRecorded);
+                };
+                waveIn.StartRecording();
             }
         }
 
-        /// <summary>
-        /// Stops the music sync by stopping and disposing the audio capture and playback devices.
-        /// </summary>
         private void StopMusicSync()
         {
-            if (audioCapture != null)
-            {
-                audioCapture.StopRecording();
-                audioCapture.Dispose();
-                audioCapture = null;
-            }
+            loopbackCapture?.StopRecording();
+            waveIn?.StopRecording();
+            loopbackCapture?.Dispose();
+            waveIn?.Dispose();
+            loopbackCapture = null;
+            waveIn = null;
         }
 
-        /// <summary>
-        /// Audio data callback for processing captured audio for bass detection and passthrough.
-        /// </summary>
-        // This method is called whenever audio data is available.
-        private void AudioCapture_DataAvailable(object sender, WaveInEventArgs e)
+        private void ProcessFFT(byte[] buffer, int bytesRecorded)
         {
-            int bytesPerSample = audioCapture.WaveFormat.BitsPerSample / 8;
-            int sampleCount = e.BytesRecorded / bytesPerSample;
-            int offset = 0;
-
-            // Process all samples in the provided buffer.
-            while (offset < sampleCount)
+            int samples = bytesRecorded / 2;
+            for (int i = 0; i < fftSize && i < samples; i++)
             {
-                // Fill the FFT sample buffer until full.
-                while (bufferOffset < fftSize && offset < sampleCount)
-                {
-                    short sample = BitConverter.ToInt16(e.Buffer, offset * bytesPerSample);
-                    float normalizedSample = sample / 32768f; // Normalize to [-1, 1]
-                    sampleBuffer[bufferOffset++] = normalizedSample;
-                    offset++;
-                }
-
-                // When the buffer is full, process the FFT block.
-                if (bufferOffset == fftSize)
-                {
-                    ProcessFFTBlock();
-                }
-            }
-        }
-
-        // This helper method processes the audio block, performing FFT and computing bass energy.
-        private void ProcessFFTBlock()
-        {
-            // Apply the Hann window and copy to the FFT buffer.
-            for (int j = 0; j < fftSize; j++)
-            {
-                // Hann window formula: 0.5 * [1 - cos(2πj/(N-1))]
-                float windowValue = 0.5f * (1 - (float)Math.Cos(2 * Math.PI * j / (fftSize - 1)));
-                fftBuffer[j].X = sampleBuffer[j] * windowValue;
-                fftBuffer[j].Y = 0; // Imaginary part is zero
+                short sample = BitConverter.ToInt16(buffer, i * 2);
+                fftComplex[i] = new Complex { X = (float)(sample / 32768.0), Y = 0 };
             }
 
-            // Perform FFT. The 2nd parameter is log2(fftSize).
-            FastFourierTransform.FFT(true, (int)Math.Log(fftSize, 2), fftBuffer);
+            FastFourierTransform.FFT(true, (int)Math.Log(fftSize, 2), fftComplex);
 
-            // Determine how many bins correspond to bass (approximately 20Hz to 250Hz).
-            float sampleRate = audioCapture.WaveFormat.SampleRate;
-            float freqResolution = sampleRate / fftSize;
-            // bassThreshold here is set to 250Hz; adjust if needed.
-            int bassBinCount = (int)(250 / freqResolution);
-            bassBinCount = Math.Min(bassBinCount, fftBuffer.Length / 2);
+            float bass = 0, mid = 0, treble = 0;
+            int nyquist = 44100 / 2;
 
-            // Calculate the maximum magnitude among bass bins.
-            float maxMagnitude = 0;
-            for (int k = 0; k < bassBinCount; k++)
+            for (int i = 0; i < fftSize / 2; i++)
             {
-                float magnitude = (float)Math.Sqrt(fftBuffer[k].X * fftBuffer[k].X +
-                                                     fftBuffer[k].Y * fftBuffer[k].Y);
-                if (magnitude > maxMagnitude)
-                {
-                    maxMagnitude = magnitude;
-                }
+                float freq = i * nyquist / (fftSize / 2);
+                float magnitude = (float)Math.Sqrt(fftComplex[i].X * fftComplex[i].X + fftComplex[i].Y * fftComplex[i].Y);
+
+                if (freq >= 20 && freq < bassFrequency)
+                    bass += magnitude;
+                else if (freq < midFrequency)
+                    mid += magnitude;
+                else if (freq < trebleFrequency)
+                    treble += magnitude;
             }
 
-            // Map the maximum bass magnitude to a brightness value.
-            // The multiplier (5000) is an empirical value; adjust it according to your input level.
-            float rawBrightness = Math.Min(255, maxMagnitude * 5000);
+            // === Smoothing (EMA) ===
+            bassEMA = bassEMA * (1 - bassSmoothing) + bass * bassSmoothing;
+            midEMA = midEMA * (1 - midSmoothing) + mid * midSmoothing;
+            trebleEMA = trebleEMA * (1 - trebleSmoothing) + treble * trebleSmoothing;
 
-            // Apply exponential moving average for smoother transitions.
-            smoothedBrightness = smoothingFactor * smoothedBrightness + (1 - smoothingFactor) * rawBrightness;
+            // === Auto-gain ===
+            bassGain = Math.Max(bassGain * 0.9f, bassEMA);   //lower = faster decay
+            midGain = Math.Max(midGain * 0.9f, midEMA);
+            trebleGain = Math.Max(trebleGain * 0.9f, trebleEMA);
 
-            // Apply a deadzone to ignore negligible energy.
-            if (smoothedBrightness < 5)
-                smoothedBrightness = 0;
+            // Spike multiplier for bass transient boost
+            float boostedBass = bassEMA * bassBoost;
 
-            int brightnessInt = (int)Math.Min(255, smoothedBrightness);
+            bool isSilent = (bass + mid + treble) < 0.001f;
 
-            // Output a red tone based solely on bass intensity.
-            Color bassColor = Color.FromArgb(brightnessInt, 0, 0);
-            sendColorToArduino(bassColor);
-
-            // Reset the buffer offset for the next FFT block.
-            bufferOffset = 0;
-        }
-
-
-        /// <summary>
-        /// Called when audio capture stops, cleans up resources.
-        /// </summary>
-        private void AudioCapture_RecordingStopped(object sender, StoppedEventArgs e)
-        {
-            // Cleanup is handled in StopMusicSync.
-            if (e.Exception != null)
+            if (isSilent)
             {
-                MessageBox.Show("Audio capture error: " + e.Exception.Message);
+                bassEMA = midEMA = trebleEMA = 0;
+                bassGain = Math.Max(bassGain * 0.95f, 0.1f);
+                midGain = Math.Max(midGain * 0.95f, 0.1f);
+                trebleGain = Math.Max(trebleGain * 0.95f, 0.1f);
             }
+
+            // Clamp gain
+            bassGain = Math.Max(bassGain, 0.05f);
+            midGain = Math.Max(midGain, 0.05f);
+            trebleGain = Math.Max(trebleGain, 0.05f);
+
+            // Normalize
+            float normBass = Clamp(boostedBass / bassGain, 0, 1);
+            float normMid = Clamp(midEMA / midGain, 0, 1);
+            float normTreble = Clamp(trebleEMA / trebleGain, 0, 1);
+
+            // Normalize and clamp
+            int r = Math.Min(255, (int)(Math.Pow(boostedBass / bassGain, 2.5) * 255*0.6));
+            int g = Math.Min(255, (int)(midEMA / midGain * 255*0.6));
+            int b = Math.Min(255, (int)(trebleEMA / trebleGain * 255*0.6));
+
+            Color musicColor = Color.FromArgb(0, g, 0);
+            this.BeginInvoke((Action)(() => this.BackColor = musicColor));
+            sendColorToArduino(musicColor);
         }
         #endregion
+        private float Clamp(float value, float min, float max)
+        {
+            if (value < min) return min;
+            if (value > max) return max;
+            return value;
+        }
     }
 }
