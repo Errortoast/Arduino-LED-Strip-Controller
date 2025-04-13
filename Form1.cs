@@ -16,32 +16,28 @@ namespace Arduino_LED_Strip_Controller
 {
     public partial class Form1 : Form
     {
+        #region Global Variables
         #region audio
         private List<MMDevice> renderDevices = new List<MMDevice>();
         private List<MMDevice> inputDevices = new List<MMDevice>();
 
         private MMDeviceEnumerator deviceEnumerator;
 
-        float bassSmoothing = 0.5f;
-        float midSmoothing = 0.5f;
-        float trebleSmoothing = 0.5f;
+        private const int FFT_SIZE = 1024; // Must be a power of 2
+        private const int SampleRate = 44100; // Should match your audio format
 
-        float bassBoost = 1.2f;
+        // Assuming you already have an audio capture that provides raw sample bytes.
+        private float[] audioSamples = new float[FFT_SIZE];
+        private NAudio.Dsp.Complex[] fftBuffer = new NAudio.Dsp.Complex[FFT_SIZE];
 
-        int bassFrequency = 250; //in Hz
-        int midFrequency = 1500;
-        int trebleFrequency = 16000;
+
+        int bassFrequency = 50; //in Hz
+        int midFrequency = 2000;
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
-        private float[] fftBuffer = new float[256];
-        private Complex[] fftComplex = new Complex[256];
-        private int fftSize = 256;
+        
         private bool musicSyncEnabled = false;
-        private object fftLock = new object();
-
-        private float bassEMA = 0, midEMA = 0, trebleEMA = 0;
-        private float bassGain = 0.1f, midGain = 0.2f, trebleGain = 0.4f;
         #endregion
 
         private SerialPort serialPort;
@@ -52,12 +48,14 @@ namespace Arduino_LED_Strip_Controller
         int defaultMonitor = 0;
         int defaultAudioInput = 0;
         int defaultAudioOutput = 0;
+        #endregion
 
         public Form1()
         {
             InitializeComponent();
         }
 
+        #region Event Handlers
         private void Form1_Load(object sender, EventArgs e)
         {
             serialPort = new SerialPort();
@@ -183,8 +181,7 @@ namespace Arduino_LED_Strip_Controller
 
             if (mode == "Music Sync")
             {
-                bool useOutput = false; // toggle with checkbox later
-                StartMusicSync(useOutput);
+                StartMusicSync(false);
             }
             else
             {
@@ -212,6 +209,16 @@ namespace Arduino_LED_Strip_Controller
             }
             Debug.WriteLine($"color,{color.R:D3},{color.G:D3},{color.B:D3}");
         }
+        #endregion
+
+        #region utility
+        private float Clamp(float value, float min, float max)
+        {
+            if (value < min) return min;
+            if (value > max) return max;
+            return value;
+        }
+        #endregion
 
         #region screen
         #region bitmap processing
@@ -313,7 +320,7 @@ namespace Arduino_LED_Strip_Controller
                 loopbackCapture = new WasapiLoopbackCapture(device);
                 loopbackCapture.DataAvailable += (s, e) =>
                 {
-                    ProcessFFT(e.Buffer, e.BytesRecorded);
+                    ProcessFFT(e.Buffer);
                 };
                 loopbackCapture.StartRecording();
             }
@@ -326,7 +333,7 @@ namespace Arduino_LED_Strip_Controller
                 };
                 waveIn.DataAvailable += (s, e) =>
                 {
-                    ProcessFFT(e.Buffer, e.BytesRecorded);
+                    ProcessFFT(e.Buffer);
                 };
                 waveIn.StartRecording();
             }
@@ -342,81 +349,84 @@ namespace Arduino_LED_Strip_Controller
             waveIn = null;
         }
 
-        private void ProcessFFT(byte[] buffer, int bytesRecorded)
+        private void ProcessFFT(byte[] audioBuffer)
         {
-            int samples = bytesRecorded / 2;
-            for (int i = 0; i < fftSize && i < samples; i++)
+            // 1. Convert raw audio bytes to float samples.
+            //    Here we assume each sample is 16-bit PCM: 2 bytes per sample.
+            int sampleCount = Math.Min(audioBuffer.Length / 2, FFT_SIZE);
+            for (int i = 0; i < FFT_SIZE; i++)
             {
-                short sample = BitConverter.ToInt16(buffer, i * 2);
-                fftComplex[i] = new Complex { X = (float)(sample / 32768.0), Y = 0 };
+                float sample = 0;
+                if (i < sampleCount)
+                {
+                    // Convert 2 bytes to a 16-bit integer and normalize to [-1.0f, 1.0f].
+                    sample = BitConverter.ToInt16(audioBuffer, i * 2) / 32768f;
+                }
+                // Apply a Hamming window to reduce spectral leakage.
+                float windowedSample = sample * HammingWindow(i, FFT_SIZE);
+
+                // Load sample into FFT buffer (imaginary part is 0).
+                fftBuffer[i].X = windowedSample;
+                fftBuffer[i].Y = 0;
             }
 
-            FastFourierTransform.FFT(true, (int)Math.Log(fftSize, 2), fftComplex);
+            // 2. Perform FFT. The second parameter is log2(FFT_SIZE).
+            FastFourierTransform.FFT(true, (int)Math.Log(FFT_SIZE, 2), fftBuffer);
 
-            float bass = 0, mid = 0, treble = 0;
-            int nyquist = 44100 / 2;
-
-            for (int i = 0; i < fftSize / 2; i++)
+            // 3. Compute magnitudes for each frequency bin (only half are unique).
+            double[] magnitudes = new double[FFT_SIZE / 2];
+            for (int i = 0; i < FFT_SIZE / 2; i++)
             {
-                float freq = i * nyquist / (fftSize / 2);
-                float magnitude = (float)Math.Sqrt(fftComplex[i].X * fftComplex[i].X + fftComplex[i].Y * fftComplex[i].Y);
+                double real = fftBuffer[i].X;
+                double imag = fftBuffer[i].Y;
+                magnitudes[i] = Math.Sqrt(real * real + imag * imag);
+            }
 
-                if (freq >= 20 && freq < bassFrequency)
-                    bass += magnitude;
+            // 4. Map frequency bands to color components:
+            // Define three bands: bass (< bassFrequency), mid (between bassFrequency and midFrequency),
+            // treble (> midFrequency)
+            double bassEnergy = 0, midEnergy = 0, trebleEnergy = 0;
+            int bassCount = 0, midCount = 0, trebleCount = 0;
+
+            // Frequency resolution: each bin corresponds to SampleRate/FFT_SIZE Hz.
+            double freqResolution = (double)SampleRate / FFT_SIZE;
+            for (int i = 1; i < magnitudes.Length; i++)  // start at 1 to skip the DC component
+            {
+                double freq = i * freqResolution;
+                if (freq < bassFrequency)
+                {
+                    bassEnergy += magnitudes[i];
+                    bassCount++;
+                }
                 else if (freq < midFrequency)
-                    mid += magnitude;
-                else if (freq < trebleFrequency)
-                    treble += magnitude;
+                {
+                    midEnergy += magnitudes[i];
+                    midCount++;
+                }
+                else
+                {
+                    trebleEnergy += magnitudes[i];
+                    trebleCount++;
+                }
             }
+            if (bassCount > 0) bassEnergy /= bassCount;
+            if (midCount > 0) midEnergy /= midCount;
+            if (trebleCount > 0) trebleEnergy /= trebleCount;
 
-            // === Smoothing (EMA) ===
-            bassEMA = bassEMA * (1 - bassSmoothing) + bass * bassSmoothing;
-            midEMA = midEMA * (1 - midSmoothing) + mid * midSmoothing;
-            trebleEMA = trebleEMA * (1 - trebleSmoothing) + treble * trebleSmoothing;
+            // 5. Clamp the energy values to the 0–255 range and add exponential brightness.
+            int r = (int)Clamp((float)(Math.Pow((bassEnergy * 4000) / 255, 2) * 255), 0, 255);
+            int g = (int)Clamp((float)(Math.Pow((midEnergy * 30000) / 255, 2) * 255), 0, 255);
+            int b = (int)Clamp((float)(Math.Pow((trebleEnergy * 400000) / 255, 2) * 255), 0, 255);
 
-            // === Auto-gain ===
-            bassGain = Math.Max(bassGain * 0.9f, bassEMA);   //lower = faster decay
-            midGain = Math.Max(midGain * 0.9f, midEMA);
-            trebleGain = Math.Max(trebleGain * 0.9f, trebleEMA);
+            // 6. Create a color from the energy values and send it to the Arduino.
+            Color outputColor = Color.FromArgb(r, g, b);
+            sendColorToArduino(outputColor);
+        }
 
-            // Spike multiplier for bass transient boost
-            float boostedBass = bassEMA * bassBoost;
-
-            bool isSilent = (bass + mid + treble) < 0.001f;
-
-            if (isSilent)
-            {
-                bassEMA = midEMA = trebleEMA = 0;
-                bassGain = Math.Max(bassGain * 0.95f, 0.1f);
-                midGain = Math.Max(midGain * 0.95f, 0.1f);
-                trebleGain = Math.Max(trebleGain * 0.95f, 0.1f);
-            }
-
-            // Clamp gain
-            bassGain = Math.Max(bassGain, 0.05f);
-            midGain = Math.Max(midGain, 0.05f);
-            trebleGain = Math.Max(trebleGain, 0.05f);
-
-            // Normalize
-            float normBass = Clamp(boostedBass / bassGain, 0, 1);
-            float normMid = Clamp(midEMA / midGain, 0, 1);
-            float normTreble = Clamp(trebleEMA / trebleGain, 0, 1);
-
-            // Normalize and clamp
-            int r = Math.Min(255, (int)(Math.Pow(boostedBass / bassGain, 2.5) * 255*0.6));
-            int g = Math.Min(255, (int)(midEMA / midGain * 255*0.6));
-            int b = Math.Min(255, (int)(trebleEMA / trebleGain * 255*0.6));
-
-            Color musicColor = Color.FromArgb(0, g, 0);
-            this.BeginInvoke((Action)(() => this.BackColor = musicColor));
-            sendColorToArduino(musicColor);
+        private float HammingWindow(int i, int windowSize)
+        {
+            return (float)(0.54 - 0.46 * Math.Cos((2 * Math.PI * i) / (windowSize - 1)));
         }
         #endregion
-        private float Clamp(float value, float min, float max)
-        {
-            if (value < min) return min;
-            if (value > max) return max;
-            return value;
-        }
     }
 }
