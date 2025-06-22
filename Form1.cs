@@ -40,7 +40,7 @@ namespace Arduino_LED_Strip_Controller
         private const double SMOOTHING_ALPHA = 0.1; // 0 < alpha < 1
 
         private int bassFrequency = 100; // in Hz
-        private int midFrequency = 3000;
+        private int midFrequency = 4000;
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
@@ -48,7 +48,9 @@ namespace Arduino_LED_Strip_Controller
 
         private SerialPort serialPort;
         public Color averageColor;
-        int downscaleFactor = 6;
+        int downscaleFactor = 24;
+        const int FrameIntervalMs = 16;     // ~60 FPS
+        DateTime lastScreenSyncTime = DateTime.MinValue;
 
         int defaultComPort = 0;
         int defaultMonitor = 0;
@@ -60,6 +62,25 @@ namespace Arduino_LED_Strip_Controller
         private PipeServer pipeServer;
 
         public string currentMode = "";
+
+        List<Color> fadeColors = new List<Color>
+        {
+            Color.Red,
+            Color.Orange,
+            Color.Yellow,
+            Color.YellowGreen,
+            Color.Green,
+            Color.Turquoise,
+            Color.Aqua,
+            Color.Blue,
+            Color.BlueViolet,
+            Color.Violet
+        };
+        private System.Windows.Forms.Timer fadeTimer;
+        private int currentColorIndex = 0;
+        private int nextColorIndex = 1;
+        private float fadeProgress = 0f;
+        private float fadeSpeed = 0.01f;
         #endregion
 
         public Form1()
@@ -105,7 +126,7 @@ namespace Arduino_LED_Strip_Controller
             else
             {
                 string[] lines = File.ReadAllLines(Application.StartupPath + "\\Settings.txt");
-                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length !=0 && lines.Length >= 6)
+                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length !=0 && lines.Length >= 8)
                 {
                     const string colonCharacter = ":";
 
@@ -126,6 +147,14 @@ namespace Arduino_LED_Strip_Controller
 
                     string[] audioColorChannelsFromSettingsFile = lines[5].Split(colonCharacter[0]);
                     audioColorChannels = new bool[] {audioColorChannelsFromSettingsFile[1]=="True"?true:false, audioColorChannelsFromSettingsFile[2] == "True" ? true : false, audioColorChannelsFromSettingsFile[3] == "True" ? true : false, audioColorChannelsFromSettingsFile[4] == "True" ? true : false, audioColorChannelsFromSettingsFile[5] == "True" ? true : false, audioColorChannelsFromSettingsFile[6] == "True" ? true : false, audioColorChannelsFromSettingsFile[7] == "True" ? true : false, audioColorChannelsFromSettingsFile[8] == "True" ? true : false, audioColorChannelsFromSettingsFile[9] == "True" ? true : false};
+
+                    string[] bassCutoffFromSettingsFile = lines[6].Split(colonCharacter[0]);
+                    bassFrequency = Convert.ToInt32(bassCutoffFromSettingsFile[1]);
+                    Debug.WriteLine(bassFrequency.ToString());
+
+
+                    string[] midCutoffFromSettingsFile = lines[7].Split(colonCharacter[0]);
+                    midFrequency = Convert.ToInt32(midCutoffFromSettingsFile[1]);
                 }
 
             }
@@ -138,6 +167,8 @@ namespace Arduino_LED_Strip_Controller
             blueBass.Checked = audioColorChannels[6];
             blueMid.Checked = audioColorChannels[7];
             blueTreble.Checked = audioColorChannels[8];
+            bassCutoff.Value = bassFrequency;
+            midCutoff.Value = midFrequency;
             Console.WriteLine("Settings imported");
             #endregion
 
@@ -254,6 +285,8 @@ namespace Arduino_LED_Strip_Controller
                 writer.WriteLine("Default audio output:" + audioOutput.SelectedIndex.ToString());
                 writer.WriteLine("Use speakers for audio sync:" + useSpeakers.ToString());
                 writer.WriteLine($"Audio color channels:{audioColorChannels[0]}:{audioColorChannels[1]}:{audioColorChannels[2]}:{audioColorChannels[3]}:{audioColorChannels[4]}:{audioColorChannels[5]}:{audioColorChannels[6]}:{audioColorChannels[7]}:{audioColorChannels[8]}:");
+                writer.WriteLine("Bass frequency cutoff:" + Convert.ToInt32(bassCutoff.Value).ToString());
+                writer.WriteLine("Mid frequency cutoff:" + Convert.ToInt32(midCutoff.Value).ToString());
             }
             Console.WriteLine("Settings written to file");
         }
@@ -278,6 +311,7 @@ namespace Arduino_LED_Strip_Controller
             Console.WriteLine("Stopping other processes");
             ScreenCapturer.StopCapture();
             StopMusicSync();
+            stopFade();
             currentMode = "screenSync";
             Console.WriteLine("Starting screen sync");
             try {
@@ -289,6 +323,7 @@ namespace Arduino_LED_Strip_Controller
         {
             Console.WriteLine("Stopping other processes");
             StopMusicSync();
+            stopFade();
             ScreenCapturer.StopCapture();
             Console.WriteLine("Starting audio sync");
             StartMusicSync(useSpeakers);
@@ -307,7 +342,7 @@ namespace Arduino_LED_Strip_Controller
             {
                 Console.WriteLine("System suspending…");
                 StopMusicSync();
-
+                stopFade();
                 ScreenCapturer.StopCapture();
 
                 var sw = Stopwatch.StartNew();
@@ -336,6 +371,10 @@ namespace Arduino_LED_Strip_Controller
                 else if (currentMode == "color")
                 {
                     sendColorToArduino(averageColor);
+                }
+                else if (currentMode == "fade")
+                {
+                    startFade();
                 }
             }
         }
@@ -438,9 +477,46 @@ namespace Arduino_LED_Strip_Controller
                 blueMid.Checked = false;
             }
         }
+
+        public void fade_Click(object sender, EventArgs e)
+        {
+            Console.WriteLine("Stopping other processes");
+            stopFade();
+            StopMusicSync();
+            ScreenCapturer.StopCapture();
+            currentMode = "fade";
+            Console.WriteLine("Starting color fade");
+            startFade();
+        }
+
+        private void colorPicker_Click(object sender, EventArgs e)
+        {
+            Console.WriteLine("Stopping other processes");
+            stopFade();
+            StopMusicSync();
+            ScreenCapturer.StopCapture();
+            currentMode = "color";
+            Console.WriteLine("Opening color dialog");
+            using (ColorDialog colorDialog = new ColorDialog())
+            {
+                if(colorDialog.ShowDialog() == DialogResult.OK)
+                {
+                    Console.WriteLine("Sending color to arduino");
+                    sendColorToArduino(colorDialog.Color);
+                }
+            }
+        }
         #endregion
 
         #region utility
+        Color LerpColor(Color from, Color to, float t)
+        {
+            int r = (int)(from.R + (to.R - from.R) * t);
+            int g = (int)(from.G + (to.G - from.G) * t);
+            int b = (int)(from.B + (to.B - from.B) * t);
+            return Color.FromArgb(r, g, b);
+        }
+
         public float Clamp(float value, float min, float max)
         {
             if (value < min) return min;
@@ -453,9 +529,20 @@ namespace Arduino_LED_Strip_Controller
             Color color = Color.FromArgb(Convert.ToInt32(Clamp(inputColor.R, 0, 205)), Convert.ToInt32(Clamp(inputColor.G, 0, 205)), Convert.ToInt32(Clamp(inputColor.B, 0, 205)));
             if (serialPort.IsOpen)
             {
-                Task.Run(() => serialPort.WriteLine($"color,{color.R:D3},{color.G:D3},{color.B:D3}"));
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        serialPort.WriteLine($"color,{color.R:D3},{color.G:D3},{color.B:D3}");
+                    }
+                    catch (Exception)
+                    {
+
+                    }
+                });
             }
             Debug.WriteLine($"color,{color.R:D3},{color.G:D3},{color.B:D3}");
+            colorDisplay.BackColor = color;
         }
 
         public Color HexToColor(string hex)
@@ -474,75 +561,56 @@ namespace Arduino_LED_Strip_Controller
         #endregion
 
         #region screen
-        #region bitmap processing
-        private Bitmap DownscaleBitmap(Bitmap bitmap, int factor)
+        private Color GetDownscaledAverageColor(Bitmap source, int factor)
         {
-            int newWidth = bitmap.Width / factor;
-            int newHeight = bitmap.Height / factor;
-
-            var downscaledBitmap = new Bitmap(newWidth, newHeight);
-            using (Graphics g = Graphics.FromImage(downscaledBitmap))
-            {
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
-                g.DrawImage(bitmap, 0, 0, newWidth, newHeight);
-            }
-            return downscaledBitmap;
-        }
-
-        private Color GetAverageColor(Bitmap bitmap)
-        {
-            BitmapData bitmapData = bitmap.LockBits(
-                new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+            var data = source.LockBits(
+                new Rectangle(0, 0, source.Width, source.Height),
                 ImageLockMode.ReadOnly,
                 PixelFormat.Format32bppArgb);
 
-            double red = 0, green = 0, blue = 0;
-            double totalWeight = 0;
+            long rSum = 0, gSum = 0, bSum = 0;
+            long wSum = 0;
 
             unsafe
             {
-                byte* scan0 = (byte*)bitmapData.Scan0;
+                byte* scan0 = (byte*)data.Scan0;
+                int stride = data.Stride;
 
-                for (int y = 0; y < bitmap.Height; y++)
+                for (int y = 0; y < source.Height; y += factor)
                 {
-                    byte* row = scan0 + (y * bitmapData.Stride);
-                    for (int x = 0; x < bitmap.Width; x++)
+                    byte* row = scan0 + y * stride;
+                    for (int x = 0; x < source.Width; x += factor)
                     {
-                        int b = row[x * 4];
-                        int g = row[x * 4 + 1];
-                        int r = row[x * 4 + 2];
+                        byte* px = row + x * 4;
+                        int b = px[0], g = px[1], r = px[2];
+                        int brightness = (r + g + b) / 3;
 
-                        int brightness = (r + g + b) / 3;  // Get pixel brightness
+                        int w = (brightness < 20) ? 1 : 1000;
 
-                        double weight = brightness < 20 ? 0.001 : 1.0; // Reduce influence of black pixels
-
-                        red += r * weight;
-                        green += g * weight;
-                        blue += b * weight;
-                        totalWeight += weight;
+                        rSum += r * w;
+                        gSum += g * w;
+                        bSum += b * w;
+                        wSum += w;
                     }
                 }
             }
 
-            bitmap.UnlockBits(bitmapData);
+            source.UnlockBits(data);
 
-            if (totalWeight == 0) return Color.Black;  // Avoid division by zero
+            if (wSum <= 0)
+                return Color.Black;
 
             return Color.FromArgb(
-                (int)(red / totalWeight),
-                (int)(green / totalWeight),
-                (int)(blue / totalWeight)
-            );
+                (int)(rSum / wSum),
+                (int)(gSum / wSum),
+                (int)(bSum / wSum));
         }
-        #endregion
 
         void OnScreenUpdated(object sender, OnScreenUpdatedEventArgs e)
         {
-            Bitmap screenshot = DownscaleBitmap(e.Bitmap, downscaleFactor);
-
-            averageColor = GetAverageColor(screenshot);
-
+            averageColor = GetDownscaledAverageColor(e.Bitmap, downscaleFactor);
             sendColorToArduino(averageColor);
+            e.Bitmap.Dispose();
         }
         #endregion
 
@@ -617,6 +685,9 @@ namespace Arduino_LED_Strip_Controller
             int bassCount = 0, midCount = 0, trebleCount = 0;
             double resolution = (double)SampleRate / FFT_SIZE;
 
+            bassFrequency = (int)bassCutoff.Value;
+            midFrequency = (int)midCutoff.Value;
+
             for (int i = 1; i < FFT_SIZE / 2; i++)
             {
                 double freq = i * resolution;
@@ -659,6 +730,42 @@ namespace Arduino_LED_Strip_Controller
         private float HammingWindow(int i, int n)
         {
             return 0.54f - 0.46f * (float)Math.Cos((2 * Math.PI * i) / (n - 1));
+        }
+        #endregion
+
+        #region fade
+        public void startFade()
+        {
+            fadeTimer = new System.Windows.Forms.Timer();
+            fadeTimer.Interval = 16;
+            fadeTimer.Tick += FadeTimer_Tick;
+            fadeTimer.Start();
+        }
+        public void stopFade()
+        {
+            if (fadeTimer != null)
+            {
+                fadeTimer.Stop();
+            }
+        }
+        void FadeTimer_Tick(object sender, EventArgs e)
+        {
+            fadeProgress += fadeSpeed;
+
+            if (fadeProgress >= 1.0f)
+            {
+                fadeProgress = 0.0f;
+                currentColorIndex = nextColorIndex;
+                nextColorIndex = (nextColorIndex + 1) % fadeColors.Count;
+            }
+
+            // Blend between current and next
+            Color currentFadeColor = LerpColor(
+                fadeColors[currentColorIndex],
+                fadeColors[nextColorIndex],
+                fadeProgress
+            );
+            sendColorToArduino(currentFadeColor);
         }
         #endregion
     }
@@ -716,13 +823,14 @@ namespace Arduino_LED_Strip_Controller
                 }
                 else if (message == "fade")
                 {
-                    
+                    form.fade_Click(null, EventArgs.Empty);
                 }
                 else if (message.Split("|"[0])[0]=="color")
                 {
                     Console.WriteLine("Stopping other processes");
                     form.StopMusicSync();
                     ScreenCapturer.StopCapture();
+                    form.stopFade();
                     form.currentMode = "color";
                     Console.WriteLine("Sending color");
                     form.averageColor = form.HexToColor(message.Split("|"[0])[1]);

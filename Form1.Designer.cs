@@ -37,6 +37,7 @@ namespace Arduino_LED_Strip_Controller
             this.saveAndClose = new System.Windows.Forms.Button();
             this.Tabs = new System.Windows.Forms.TabControl();
             this.Main = new System.Windows.Forms.TabPage();
+            this.colorDisplay = new System.Windows.Forms.Panel();
             this.fade = new System.Windows.Forms.Button();
             this.colorPicker = new System.Windows.Forms.Button();
             this.musicSync = new System.Windows.Forms.Button();
@@ -44,6 +45,10 @@ namespace Arduino_LED_Strip_Controller
             this.modeLabel = new System.Windows.Forms.Label();
             this.connect1 = new System.Windows.Forms.Button();
             this.Settings = new System.Windows.Forms.TabPage();
+            this.midCutoff = new System.Windows.Forms.NumericUpDown();
+            this.midCutoffLabel = new System.Windows.Forms.Label();
+            this.bassCutoff = new System.Windows.Forms.NumericUpDown();
+            this.bassCutoffLabel = new System.Windows.Forms.Label();
             this.blue = new System.Windows.Forms.Label();
             this.green = new System.Windows.Forms.Label();
             this.red = new System.Windows.Forms.Label();
@@ -69,6 +74,8 @@ namespace Arduino_LED_Strip_Controller
             this.Tabs.SuspendLayout();
             this.Main.SuspendLayout();
             this.Settings.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.midCutoff)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.bassCutoff)).BeginInit();
             this.SuspendLayout();
             // 
             // comPort
@@ -93,7 +100,7 @@ namespace Arduino_LED_Strip_Controller
             // screenSelection
             // 
             this.screenSelection.FormattingEnabled = true;
-            this.screenSelection.Location = new System.Drawing.Point(10, 94);
+            this.screenSelection.Location = new System.Drawing.Point(10, 95);
             this.screenSelection.Name = "screenSelection";
             this.screenSelection.Size = new System.Drawing.Size(202, 21);
             this.screenSelection.TabIndex = 3;
@@ -102,7 +109,7 @@ namespace Arduino_LED_Strip_Controller
             // saveAndClose
             // 
             this.saveAndClose.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
-            this.saveAndClose.Location = new System.Drawing.Point(815, 524);
+            this.saveAndClose.Location = new System.Drawing.Point(309, 413);
             this.saveAndClose.Name = "saveAndClose";
             this.saveAndClose.Size = new System.Drawing.Size(75, 23);
             this.saveAndClose.TabIndex = 4;
@@ -120,11 +127,12 @@ namespace Arduino_LED_Strip_Controller
             this.Tabs.Location = new System.Drawing.Point(12, 12);
             this.Tabs.Name = "Tabs";
             this.Tabs.SelectedIndex = 0;
-            this.Tabs.Size = new System.Drawing.Size(904, 579);
+            this.Tabs.Size = new System.Drawing.Size(398, 468);
             this.Tabs.TabIndex = 5;
             // 
             // Main
             // 
+            this.Main.Controls.Add(this.colorDisplay);
             this.Main.Controls.Add(this.fade);
             this.Main.Controls.Add(this.colorPicker);
             this.Main.Controls.Add(this.musicSync);
@@ -134,28 +142,37 @@ namespace Arduino_LED_Strip_Controller
             this.Main.Location = new System.Drawing.Point(4, 22);
             this.Main.Name = "Main";
             this.Main.Padding = new System.Windows.Forms.Padding(3);
-            this.Main.Size = new System.Drawing.Size(896, 553);
+            this.Main.Size = new System.Drawing.Size(390, 442);
             this.Main.TabIndex = 1;
             this.Main.Text = "Main";
             this.Main.UseVisualStyleBackColor = true;
             // 
+            // colorDisplay
+            // 
+            this.colorDisplay.Location = new System.Drawing.Point(6, 66);
+            this.colorDisplay.Name = "colorDisplay";
+            this.colorDisplay.Size = new System.Drawing.Size(378, 33);
+            this.colorDisplay.TabIndex = 9;
+            // 
             // fade
             // 
-            this.fade.Location = new System.Drawing.Point(337, 6);
+            this.fade.Location = new System.Drawing.Point(9, 36);
             this.fade.Name = "fade";
             this.fade.Size = new System.Drawing.Size(87, 23);
             this.fade.TabIndex = 8;
             this.fade.Text = "Fade";
             this.fade.UseVisualStyleBackColor = true;
+            this.fade.Click += new System.EventHandler(this.fade_Click);
             // 
             // colorPicker
             // 
-            this.colorPicker.Location = new System.Drawing.Point(244, 6);
+            this.colorPicker.Location = new System.Drawing.Point(102, 36);
             this.colorPicker.Name = "colorPicker";
             this.colorPicker.Size = new System.Drawing.Size(87, 23);
             this.colorPicker.TabIndex = 7;
             this.colorPicker.Text = "Color Picker";
             this.colorPicker.UseVisualStyleBackColor = true;
+            this.colorPicker.Click += new System.EventHandler(this.colorPicker_Click);
             // 
             // musicSync
             // 
@@ -190,7 +207,7 @@ namespace Arduino_LED_Strip_Controller
             // connect1
             // 
             this.connect1.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.connect1.Location = new System.Drawing.Point(815, 6);
+            this.connect1.Location = new System.Drawing.Point(309, 6);
             this.connect1.Name = "connect1";
             this.connect1.Size = new System.Drawing.Size(75, 23);
             this.connect1.TabIndex = 3;
@@ -200,6 +217,10 @@ namespace Arduino_LED_Strip_Controller
             // 
             // Settings
             // 
+            this.Settings.Controls.Add(this.midCutoff);
+            this.Settings.Controls.Add(this.midCutoffLabel);
+            this.Settings.Controls.Add(this.bassCutoff);
+            this.Settings.Controls.Add(this.bassCutoffLabel);
             this.Settings.Controls.Add(this.blue);
             this.Settings.Controls.Add(this.green);
             this.Settings.Controls.Add(this.red);
@@ -228,15 +249,77 @@ namespace Arduino_LED_Strip_Controller
             this.Settings.Location = new System.Drawing.Point(4, 22);
             this.Settings.Name = "Settings";
             this.Settings.Padding = new System.Windows.Forms.Padding(3);
-            this.Settings.Size = new System.Drawing.Size(896, 553);
+            this.Settings.Size = new System.Drawing.Size(390, 442);
             this.Settings.TabIndex = 2;
             this.Settings.Text = "Settings";
             this.Settings.UseVisualStyleBackColor = true;
             // 
+            // midCutoff
+            // 
+            this.midCutoff.Location = new System.Drawing.Point(10, 338);
+            this.midCutoff.Maximum = new decimal(new int[] {
+            25000,
+            0,
+            0,
+            0});
+            this.midCutoff.Minimum = new decimal(new int[] {
+            20,
+            0,
+            0,
+            0});
+            this.midCutoff.Name = "midCutoff";
+            this.midCutoff.Size = new System.Drawing.Size(120, 20);
+            this.midCutoff.TabIndex = 31;
+            this.midCutoff.Value = new decimal(new int[] {
+            20,
+            0,
+            0,
+            0});
+            // 
+            // midCutoffLabel
+            // 
+            this.midCutoffLabel.AutoSize = true;
+            this.midCutoffLabel.Location = new System.Drawing.Point(7, 322);
+            this.midCutoffLabel.Name = "midCutoffLabel";
+            this.midCutoffLabel.Size = new System.Drawing.Size(76, 13);
+            this.midCutoffLabel.TabIndex = 30;
+            this.midCutoffLabel.Text = "Mid cutoff (Hz)";
+            // 
+            // bassCutoff
+            // 
+            this.bassCutoff.Location = new System.Drawing.Point(10, 299);
+            this.bassCutoff.Maximum = new decimal(new int[] {
+            25000,
+            0,
+            0,
+            0});
+            this.bassCutoff.Minimum = new decimal(new int[] {
+            20,
+            0,
+            0,
+            0});
+            this.bassCutoff.Name = "bassCutoff";
+            this.bassCutoff.Size = new System.Drawing.Size(120, 20);
+            this.bassCutoff.TabIndex = 29;
+            this.bassCutoff.Value = new decimal(new int[] {
+            20,
+            0,
+            0,
+            0});
+            // 
+            // bassCutoffLabel
+            // 
+            this.bassCutoffLabel.AutoSize = true;
+            this.bassCutoffLabel.Location = new System.Drawing.Point(7, 283);
+            this.bassCutoffLabel.Name = "bassCutoffLabel";
+            this.bassCutoffLabel.Size = new System.Drawing.Size(82, 13);
+            this.bassCutoffLabel.TabIndex = 27;
+            this.bassCutoffLabel.Text = "Bass cutoff (Hz)";
+            // 
             // blue
             // 
             this.blue.AutoSize = true;
-            this.blue.Location = new System.Drawing.Point(25, 248);
+            this.blue.Location = new System.Drawing.Point(25, 249);
             this.blue.Name = "blue";
             this.blue.Size = new System.Drawing.Size(28, 13);
             this.blue.TabIndex = 25;
@@ -245,7 +328,7 @@ namespace Arduino_LED_Strip_Controller
             // green
             // 
             this.green.AutoSize = true;
-            this.green.Location = new System.Drawing.Point(17, 227);
+            this.green.Location = new System.Drawing.Point(17, 228);
             this.green.Name = "green";
             this.green.Size = new System.Drawing.Size(36, 13);
             this.green.TabIndex = 24;
@@ -254,7 +337,7 @@ namespace Arduino_LED_Strip_Controller
             // red
             // 
             this.red.AutoSize = true;
-            this.red.Location = new System.Drawing.Point(26, 208);
+            this.red.Location = new System.Drawing.Point(26, 209);
             this.red.Name = "red";
             this.red.Size = new System.Drawing.Size(27, 13);
             this.red.TabIndex = 23;
@@ -263,7 +346,7 @@ namespace Arduino_LED_Strip_Controller
             // treble
             // 
             this.treble.AutoSize = true;
-            this.treble.Location = new System.Drawing.Point(98, 191);
+            this.treble.Location = new System.Drawing.Point(98, 192);
             this.treble.Name = "treble";
             this.treble.Size = new System.Drawing.Size(37, 13);
             this.treble.TabIndex = 22;
@@ -272,7 +355,7 @@ namespace Arduino_LED_Strip_Controller
             // mid
             // 
             this.mid.AutoSize = true;
-            this.mid.Location = new System.Drawing.Point(75, 191);
+            this.mid.Location = new System.Drawing.Point(75, 192);
             this.mid.Name = "mid";
             this.mid.Size = new System.Drawing.Size(24, 13);
             this.mid.TabIndex = 21;
@@ -281,7 +364,7 @@ namespace Arduino_LED_Strip_Controller
             // bass
             // 
             this.bass.AutoSize = true;
-            this.bass.Location = new System.Drawing.Point(44, 191);
+            this.bass.Location = new System.Drawing.Point(44, 192);
             this.bass.Name = "bass";
             this.bass.Size = new System.Drawing.Size(30, 13);
             this.bass.TabIndex = 20;
@@ -290,7 +373,7 @@ namespace Arduino_LED_Strip_Controller
             // blueTreble
             // 
             this.blueTreble.AutoSize = true;
-            this.blueTreble.Location = new System.Drawing.Point(101, 247);
+            this.blueTreble.Location = new System.Drawing.Point(101, 248);
             this.blueTreble.Name = "blueTreble";
             this.blueTreble.Size = new System.Drawing.Size(15, 14);
             this.blueTreble.TabIndex = 19;
@@ -300,7 +383,7 @@ namespace Arduino_LED_Strip_Controller
             // greenTreble
             // 
             this.greenTreble.AutoSize = true;
-            this.greenTreble.Location = new System.Drawing.Point(101, 227);
+            this.greenTreble.Location = new System.Drawing.Point(101, 228);
             this.greenTreble.Name = "greenTreble";
             this.greenTreble.Size = new System.Drawing.Size(15, 14);
             this.greenTreble.TabIndex = 18;
@@ -310,7 +393,7 @@ namespace Arduino_LED_Strip_Controller
             // redTreble
             // 
             this.redTreble.AutoSize = true;
-            this.redTreble.Location = new System.Drawing.Point(101, 207);
+            this.redTreble.Location = new System.Drawing.Point(101, 208);
             this.redTreble.Name = "redTreble";
             this.redTreble.Size = new System.Drawing.Size(15, 14);
             this.redTreble.TabIndex = 17;
@@ -320,7 +403,7 @@ namespace Arduino_LED_Strip_Controller
             // blueMid
             // 
             this.blueMid.AutoSize = true;
-            this.blueMid.Location = new System.Drawing.Point(80, 247);
+            this.blueMid.Location = new System.Drawing.Point(80, 248);
             this.blueMid.Name = "blueMid";
             this.blueMid.Size = new System.Drawing.Size(15, 14);
             this.blueMid.TabIndex = 16;
@@ -330,7 +413,7 @@ namespace Arduino_LED_Strip_Controller
             // greenMid
             // 
             this.greenMid.AutoSize = true;
-            this.greenMid.Location = new System.Drawing.Point(80, 227);
+            this.greenMid.Location = new System.Drawing.Point(80, 228);
             this.greenMid.Name = "greenMid";
             this.greenMid.Size = new System.Drawing.Size(15, 14);
             this.greenMid.TabIndex = 15;
@@ -340,7 +423,7 @@ namespace Arduino_LED_Strip_Controller
             // redMid
             // 
             this.redMid.AutoSize = true;
-            this.redMid.Location = new System.Drawing.Point(80, 207);
+            this.redMid.Location = new System.Drawing.Point(80, 208);
             this.redMid.Name = "redMid";
             this.redMid.Size = new System.Drawing.Size(15, 14);
             this.redMid.TabIndex = 14;
@@ -350,7 +433,7 @@ namespace Arduino_LED_Strip_Controller
             // blueBass
             // 
             this.blueBass.AutoSize = true;
-            this.blueBass.Location = new System.Drawing.Point(59, 247);
+            this.blueBass.Location = new System.Drawing.Point(59, 248);
             this.blueBass.Name = "blueBass";
             this.blueBass.Size = new System.Drawing.Size(15, 14);
             this.blueBass.TabIndex = 13;
@@ -360,7 +443,7 @@ namespace Arduino_LED_Strip_Controller
             // greenBass
             // 
             this.greenBass.AutoSize = true;
-            this.greenBass.Location = new System.Drawing.Point(59, 227);
+            this.greenBass.Location = new System.Drawing.Point(59, 228);
             this.greenBass.Name = "greenBass";
             this.greenBass.Size = new System.Drawing.Size(15, 14);
             this.greenBass.TabIndex = 12;
@@ -370,7 +453,7 @@ namespace Arduino_LED_Strip_Controller
             // redBass
             // 
             this.redBass.AutoSize = true;
-            this.redBass.Location = new System.Drawing.Point(59, 207);
+            this.redBass.Location = new System.Drawing.Point(59, 208);
             this.redBass.Name = "redBass";
             this.redBass.Size = new System.Drawing.Size(15, 14);
             this.redBass.TabIndex = 11;
@@ -391,7 +474,7 @@ namespace Arduino_LED_Strip_Controller
             // 
             this.audioSyncLabel.AutoSize = true;
             this.audioSyncLabel.Font = new System.Drawing.Font("Microsoft Sans Serif", 12F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.audioSyncLabel.Location = new System.Drawing.Point(6, 130);
+            this.audioSyncLabel.Location = new System.Drawing.Point(6, 131);
             this.audioSyncLabel.Name = "audioSyncLabel";
             this.audioSyncLabel.Size = new System.Drawing.Size(99, 20);
             this.audioSyncLabel.TabIndex = 9;
@@ -401,7 +484,7 @@ namespace Arduino_LED_Strip_Controller
             // 
             this.screenSyncLabel.AutoSize = true;
             this.screenSyncLabel.Font = new System.Drawing.Font("Microsoft Sans Serif", 12F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.screenSyncLabel.Location = new System.Drawing.Point(6, 71);
+            this.screenSyncLabel.Location = new System.Drawing.Point(6, 72);
             this.screenSyncLabel.Name = "screenSyncLabel";
             this.screenSyncLabel.Size = new System.Drawing.Size(110, 20);
             this.screenSyncLabel.TabIndex = 8;
@@ -410,7 +493,7 @@ namespace Arduino_LED_Strip_Controller
             // useSpeakersChk
             // 
             this.useSpeakersChk.AutoSize = true;
-            this.useSpeakersChk.Location = new System.Drawing.Point(172, 155);
+            this.useSpeakersChk.Location = new System.Drawing.Point(172, 156);
             this.useSpeakersChk.Name = "useSpeakersChk";
             this.useSpeakersChk.Size = new System.Drawing.Size(166, 17);
             this.useSpeakersChk.TabIndex = 7;
@@ -421,7 +504,7 @@ namespace Arduino_LED_Strip_Controller
             // audioOutput
             // 
             this.audioOutput.FormattingEnabled = true;
-            this.audioOutput.Location = new System.Drawing.Point(10, 153);
+            this.audioOutput.Location = new System.Drawing.Point(10, 154);
             this.audioOutput.Name = "audioOutput";
             this.audioOutput.Size = new System.Drawing.Size(156, 21);
             this.audioOutput.TabIndex = 6;
@@ -430,7 +513,7 @@ namespace Arduino_LED_Strip_Controller
             // audioInput
             // 
             this.audioInput.FormattingEnabled = true;
-            this.audioInput.Location = new System.Drawing.Point(15, 153);
+            this.audioInput.Location = new System.Drawing.Point(15, 154);
             this.audioInput.Name = "audioInput";
             this.audioInput.Size = new System.Drawing.Size(151, 21);
             this.audioInput.TabIndex = 5;
@@ -447,7 +530,7 @@ namespace Arduino_LED_Strip_Controller
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(928, 603);
+            this.ClientSize = new System.Drawing.Size(422, 492);
             this.Controls.Add(this.Tabs);
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.Name = "Form1";
@@ -459,6 +542,8 @@ namespace Arduino_LED_Strip_Controller
             this.Main.PerformLayout();
             this.Settings.ResumeLayout(false);
             this.Settings.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.midCutoff)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.bassCutoff)).EndInit();
             this.ResumeLayout(false);
 
         }
@@ -499,6 +584,11 @@ namespace Arduino_LED_Strip_Controller
         private System.Windows.Forms.Label generalLabel;
         private System.Windows.Forms.Label audioSyncLabel;
         private System.Windows.Forms.Label screenSyncLabel;
+        private System.Windows.Forms.Label bassCutoffLabel;
+        private System.Windows.Forms.NumericUpDown bassCutoff;
+        private System.Windows.Forms.NumericUpDown midCutoff;
+        private System.Windows.Forms.Label midCutoffLabel;
+        private System.Windows.Forms.Panel colorDisplay;
     }
 }
 
