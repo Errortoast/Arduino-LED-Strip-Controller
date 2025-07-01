@@ -245,12 +245,9 @@ namespace Arduino_LED_Strip_Controller
                 serialPort.Close();
                 Console.WriteLine("COM port closed");
             }
-            Console.WriteLine("Stopping screen capture");
             ScreenCapturer.StopCapture();
-            Console.WriteLine("Screen capture stopped");
-            Console.WriteLine("Stopping music sync");
             StopMusicSync();
-            Console.WriteLine("Music sync stopped");
+            stopFade();
         }
 
         private void connect_Click(object sender, EventArgs e)
@@ -526,7 +523,7 @@ namespace Arduino_LED_Strip_Controller
 
         public void sendColorToArduino(Color inputColor)
         {
-            Color color = Color.FromArgb(Convert.ToInt32(Clamp(inputColor.R, 0, 205)), Convert.ToInt32(Clamp(inputColor.G, 0, 205)), Convert.ToInt32(Clamp(inputColor.B, 0, 205)));
+            Color color = Color.FromArgb(Convert.ToInt32(inputColor.R), Convert.ToInt32(inputColor.G), Convert.ToInt32(inputColor.B));
             if (serialPort.IsOpen)
             {
                 _ = Task.Run(() =>
