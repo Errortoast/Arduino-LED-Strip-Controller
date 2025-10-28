@@ -27,8 +27,17 @@ namespace Arduino_LED_Strip_Controller
 
         private MMDeviceEnumerator deviceEnumerator;
 
-        private int bassFrequency = 150; // in Hz
-        private int midFrequency = 3000;
+        private const int FFT_SIZE = 2048; // Must be a power of 2
+        private const int SampleRate = 44100; // Should match your audio format
+
+        // FFT buffers
+        private NAudio.Dsp.Complex[] fftBuffer = new NAudio.Dsp.Complex[FFT_SIZE];
+
+        // Smoothing state for bass, mid, treble
+        private double smoothedBass = 0;
+        private double smoothedMid = 0;
+        private double smoothedTreble = 0;
+        private const double SMOOTHING_ALPHA = 0.2; // 0 < alpha < 1
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
@@ -464,7 +473,7 @@ namespace Arduino_LED_Strip_Controller
             return Color.FromArgb(r, g, b);
         }
 
-        public float Clamp(float value, float min, float max)
+        public dynamic Clamp(dynamic value, dynamic min, dynamic max)
         {
             if (value < min) return min;
             if (value > max) return max;
@@ -610,7 +619,67 @@ namespace Arduino_LED_Strip_Controller
 
         private void ProcessFFT(byte[] audioBuffer, bool useOutput)
         {
-            
+            int sampleCount = Math.Min(audioBuffer.Length / 2, FFT_SIZE);
+            for (int i = 0; i < FFT_SIZE; i++)
+            {
+                float sample = 0;
+                if (i < sampleCount)
+                    sample = BitConverter.ToInt16(audioBuffer, i * 2) / 32768f;
+
+                // Apply Hamming window
+                float windowed = sample * HammingWindow(i, FFT_SIZE);
+                fftBuffer[i].X = windowed;
+                fftBuffer[i].Y = 0;
+            }
+
+            FastFourierTransform.FFT(true, (int)Math.Log(FFT_SIZE, 2), fftBuffer);
+
+            double bassEnergy = 0, midEnergy = 0, trebleEnergy = 0;
+            int bassCount = 0, midCount = 0, trebleCount = 0;
+            double resolution = (double)SampleRate / FFT_SIZE;
+
+            for (int i = 1; i < FFT_SIZE / 2; i++)
+            {
+                double freq = i * resolution;
+                double magnitude = Math.Sqrt(fftBuffer[i].X * fftBuffer[i].X + fftBuffer[i].Y * fftBuffer[i].Y);
+
+                if (freq > 40 && freq <= 80) //bass frequency range
+                {
+                    bassEnergy += magnitude;
+                    bassCount++;
+                }
+                else if (freq > 150 && freq <= 1000) //mid frequency range
+                {
+                    midEnergy += magnitude;
+                    midCount++;
+                }
+                else if (freq > 3000 && freq <= 4000) //treble frequency range
+                {
+                    trebleEnergy += magnitude;
+                    trebleCount++;
+                }
+            }
+
+            if (bassCount > 0) bassEnergy /= bassCount;
+            if (midCount > 0) midEnergy /= midCount;
+            if (trebleCount > 0) trebleEnergy /= trebleCount;
+
+            // Exponential smoothing
+            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - SMOOTHING_ALPHA) * bassEnergy;
+            smoothedMid = SMOOTHING_ALPHA * smoothedMid + (1 - SMOOTHING_ALPHA) * midEnergy;
+            smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
+
+            // Map to color channels
+            int b = (int)Clamp(smoothedBass*5000, 0, 255);
+            int m = (int)Clamp(smoothedMid*1000, 0, 255);
+            int t = (int)Clamp(smoothedTreble*1000, 0, 255);
+
+            sendColorToArduino(Color.FromArgb(redBass.Checked ? b : redMid.Checked ? m : redTreble.Checked ? t : 0, greenBass.Checked ? b : greenMid.Checked ? m : greenTreble.Checked ? t : 0, blueBass.Checked ? b : blueMid.Checked ? m : blueTreble.Checked ? t : 0));
+        }
+
+        private float HammingWindow(int i, int n)
+        {
+            return 0.54f - 0.46f * (float)Math.Cos((2 * Math.PI * i) / (n - 1));
         }
         #endregion
 
