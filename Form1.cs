@@ -27,20 +27,8 @@ namespace Arduino_LED_Strip_Controller
 
         private MMDeviceEnumerator deviceEnumerator;
 
-        private const int FFT_SIZE = 2048; // Must be a power of 2
-        private const int SampleRate = 44100; // Should match your audio format
-
-        // FFT buffers
-        private NAudio.Dsp.Complex[] fftBuffer = new NAudio.Dsp.Complex[FFT_SIZE];
-
-        // Smoothing state for bass, mid, treble
-        private double smoothedBass = 0;
-        private double smoothedMid = 0;
-        private double smoothedTreble = 0;
-        private const double SMOOTHING_ALPHA = 0.1; // 0 < alpha < 1
-
-        private int bassFrequency = 100; // in Hz
-        private int midFrequency = 4000;
+        private int bassFrequency = 150; // in Hz
+        private int midFrequency = 3000;
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
@@ -126,7 +114,7 @@ namespace Arduino_LED_Strip_Controller
             else
             {
                 string[] lines = File.ReadAllLines(Application.StartupPath + "\\Settings.txt");
-                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length !=0 && lines.Length >= 8)
+                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length !=0 && lines.Length >= 6)
                 {
                     const string colonCharacter = ":";
 
@@ -147,14 +135,6 @@ namespace Arduino_LED_Strip_Controller
 
                     string[] audioColorChannelsFromSettingsFile = lines[5].Split(colonCharacter[0]);
                     audioColorChannels = new bool[] {audioColorChannelsFromSettingsFile[1]=="True"?true:false, audioColorChannelsFromSettingsFile[2] == "True" ? true : false, audioColorChannelsFromSettingsFile[3] == "True" ? true : false, audioColorChannelsFromSettingsFile[4] == "True" ? true : false, audioColorChannelsFromSettingsFile[5] == "True" ? true : false, audioColorChannelsFromSettingsFile[6] == "True" ? true : false, audioColorChannelsFromSettingsFile[7] == "True" ? true : false, audioColorChannelsFromSettingsFile[8] == "True" ? true : false, audioColorChannelsFromSettingsFile[9] == "True" ? true : false};
-
-                    string[] bassCutoffFromSettingsFile = lines[6].Split(colonCharacter[0]);
-                    bassFrequency = Convert.ToInt32(bassCutoffFromSettingsFile[1]);
-                    Debug.WriteLine(bassFrequency.ToString());
-
-
-                    string[] midCutoffFromSettingsFile = lines[7].Split(colonCharacter[0]);
-                    midFrequency = Convert.ToInt32(midCutoffFromSettingsFile[1]);
                 }
 
             }
@@ -167,8 +147,6 @@ namespace Arduino_LED_Strip_Controller
             blueBass.Checked = audioColorChannels[6];
             blueMid.Checked = audioColorChannels[7];
             blueTreble.Checked = audioColorChannels[8];
-            bassCutoff.Value = bassFrequency;
-            midCutoff.Value = midFrequency;
             Console.WriteLine("Settings imported");
             #endregion
 
@@ -239,15 +217,13 @@ namespace Arduino_LED_Strip_Controller
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
-            if (serialPort.IsOpen)
-            {
-                Console.WriteLine("Closing COM port");
-                serialPort.Close();
-                Console.WriteLine("COM port closed");
-            }
             ScreenCapturer.StopCapture();
             StopMusicSync();
             stopFade();
+            pipeServer?.Stop();
+            sendColorToArduino(Color.FromArgb(0, 0, 0));
+            if (serialPort.IsOpen) serialPort.Close();
+            notifyIcon1.Dispose();
         }
 
         private void connect_Click(object sender, EventArgs e)
@@ -282,8 +258,6 @@ namespace Arduino_LED_Strip_Controller
                 writer.WriteLine("Default audio output:" + audioOutput.SelectedIndex.ToString());
                 writer.WriteLine("Use speakers for audio sync:" + useSpeakers.ToString());
                 writer.WriteLine($"Audio color channels:{audioColorChannels[0]}:{audioColorChannels[1]}:{audioColorChannels[2]}:{audioColorChannels[3]}:{audioColorChannels[4]}:{audioColorChannels[5]}:{audioColorChannels[6]}:{audioColorChannels[7]}:{audioColorChannels[8]}:");
-                writer.WriteLine("Bass frequency cutoff:" + Convert.ToInt32(bassCutoff.Value).ToString());
-                writer.WriteLine("Mid frequency cutoff:" + Convert.ToInt32(midCutoff.Value).ToString());
             }
             Console.WriteLine("Settings written to file");
         }
@@ -311,9 +285,7 @@ namespace Arduino_LED_Strip_Controller
             stopFade();
             currentMode = "screenSync";
             Console.WriteLine("Starting screen sync");
-            try {
-                ScreenCapturer.StartCapture(screenSelection.SelectedIndex);
-            } catch { }
+            ScreenCapturer.StartCapture(screenSelection.SelectedIndex);
         }
 
         public void musicSync_Click(object sender, EventArgs e)
@@ -351,28 +323,6 @@ namespace Arduino_LED_Strip_Controller
                     Debug.WriteLine("⚠️ Warning: capture thread didn't exit in time.");
 
                 serialPort?.Close();
-            }
-            else if (e.Mode == PowerModes.Resume)
-            {
-                Console.WriteLine("System resumed...");
-
-                if (!serialPort.IsOpen && comPort.SelectedItem != null)
-                {
-                    serialPort.PortName = comPort.SelectedItem.ToString();
-                    try { serialPort.Open(); } catch { /* handle or ignore */ }
-                }
-                if (currentMode == "audioSync")
-                    StartMusicSync(useSpeakers);
-                else if (currentMode == "screenSync")
-                    ScreenCapturer.StartCapture(screenSelection.SelectedIndex);
-                else if (currentMode == "color")
-                {
-                    sendColorToArduino(averageColor);
-                }
-                else if (currentMode == "fade")
-                {
-                    startFade();
-                }
             }
         }
 
@@ -632,7 +582,7 @@ namespace Arduino_LED_Strip_Controller
             {
                 var device = GetSelectedOutputDevice();
                 loopbackCapture = new WasapiLoopbackCapture(device);
-                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer);
+                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer, useOutput);
                 loopbackCapture.StartRecording();
             }
             else
@@ -642,7 +592,7 @@ namespace Arduino_LED_Strip_Controller
                     DeviceNumber = audioInput.SelectedIndex,
                     WaveFormat = new WaveFormat(44100, 1)
                 };
-                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer);
+                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer, useOutput);
                 waveIn.StartRecording();
             }
         }
@@ -656,77 +606,11 @@ namespace Arduino_LED_Strip_Controller
             waveIn?.Dispose();
             loopbackCapture = null;
             waveIn = null;
-
-            // Reset smoothing state
-            smoothedBass = smoothedMid = smoothedTreble = 0;
         }
 
-        private void ProcessFFT(byte[] audioBuffer)
+        private void ProcessFFT(byte[] audioBuffer, bool useOutput)
         {
-            int sampleCount = Math.Min(audioBuffer.Length / 2, FFT_SIZE);
-            for (int i = 0; i < FFT_SIZE; i++)
-            {
-                float sample = 0;
-                if (i < sampleCount)
-                    sample = BitConverter.ToInt16(audioBuffer, i * 2) / 32768f;
-
-                // Apply Hamming window
-                float windowed = sample * HammingWindow(i, FFT_SIZE);
-                fftBuffer[i].X = windowed;
-                fftBuffer[i].Y = 0;
-            }
-
-            FastFourierTransform.FFT(true, (int)Math.Log(FFT_SIZE, 2), fftBuffer);
-
-            double bassEnergy = 0, midEnergy = 0, trebleEnergy = 0;
-            int bassCount = 0, midCount = 0, trebleCount = 0;
-            double resolution = (double)SampleRate / FFT_SIZE;
-
-            bassFrequency = (int)bassCutoff.Value;
-            midFrequency = (int)midCutoff.Value;
-
-            for (int i = 1; i < FFT_SIZE / 2; i++)
-            {
-                double freq = i * resolution;
-                double magnitude = Math.Sqrt(fftBuffer[i].X * fftBuffer[i].X + fftBuffer[i].Y * fftBuffer[i].Y);
-
-                if (freq > 40 && freq <= bassFrequency)
-                {
-                    bassEnergy += magnitude;
-                    bassCount++;
-                }
-                else if (freq > bassFrequency && freq <= midFrequency)
-                {
-                    midEnergy += magnitude;
-                    midCount++;
-                }
-                else if (freq > midFrequency)
-                {
-                    trebleEnergy += magnitude;
-                    trebleCount++;
-                }
-            }
-
-            if (bassCount > 0) bassEnergy /= bassCount;
-            if (midCount > 0) midEnergy /= midCount;
-            if (trebleCount > 0) trebleEnergy /= trebleCount;
-
-            // Exponential smoothing
-            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - SMOOTHING_ALPHA) * bassEnergy;
-            smoothedMid = SMOOTHING_ALPHA * smoothedMid + (1 - SMOOTHING_ALPHA) * midEnergy;
-            smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
-
-            // Map to color channels
-            int b = (int)Clamp((float)(Math.Pow((smoothedBass * 8000) / 255, 3) * 255), 0, 255);
-            int m = (int)Clamp((float)(Math.Pow((smoothedMid * 70000) / 255, 2) * 255), 0, 255);
-            int t = (int)Clamp((float)(Math.Pow((smoothedTreble * 500000) / 255, 4) * 255), 0, 255);
-
-            sendColorToArduino(Color.FromArgb(redBass.Checked?b:redMid.Checked?m:redTreble.Checked?t:0, greenBass.Checked?b:greenMid.Checked?m:greenTreble.Checked?t:0, blueBass.Checked?b:blueMid.Checked?m:blueTreble.Checked?t:0));
-        }
-
-        private float HammingWindow(int i, int n)
-        {
-            return 0.54f - 0.46f * (float)Math.Cos((2 * Math.PI * i) / (n - 1));
+            
         }
         #endregion
 
@@ -770,6 +654,7 @@ namespace Arduino_LED_Strip_Controller
     {
         private const string PipeName = "ArduinoLEDStripStreamDeckPluginComms";
         private Form1 form;
+        private CancellationTokenSource cts;
 
         public PipeServer(Form1 formInstance)
         {
@@ -778,11 +663,13 @@ namespace Arduino_LED_Strip_Controller
 
         public void StartListening()
         {
+            cts = new CancellationTokenSource();
+            CancellationToken token = cts.Token;
+
             Task.Run(() =>
             {
-                while (true)
+                while (!token.IsCancellationRequested)
                 {
-                    Console.WriteLine("Creating .NET pipe");
                     using (var server = new NamedPipeServerStream(PipeName, PipeDirection.In))
                     {
                         try
@@ -792,17 +679,20 @@ namespace Arduino_LED_Strip_Controller
                             byte[] buffer = new byte[256];
                             int bytesRead = server.Read(buffer, 0, buffer.Length);
                             string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                            Console.WriteLine(".NET pipe created");
 
                             HandleMessage(message);
                         }
                         catch
                         {
-                            Console.WriteLine(".NET pipe connection failed");
                         }
                     }
                 }
-            });
+            }, token);
+        }
+
+        public void Stop()
+        {
+            cts?.Cancel();
         }
 
         private void HandleMessage(string message)

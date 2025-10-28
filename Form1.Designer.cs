@@ -45,10 +45,6 @@ namespace Arduino_LED_Strip_Controller
             this.modeLabel = new System.Windows.Forms.Label();
             this.connect1 = new System.Windows.Forms.Button();
             this.Settings = new System.Windows.Forms.TabPage();
-            this.midCutoff = new System.Windows.Forms.NumericUpDown();
-            this.midCutoffLabel = new System.Windows.Forms.Label();
-            this.bassCutoff = new System.Windows.Forms.NumericUpDown();
-            this.bassCutoffLabel = new System.Windows.Forms.Label();
             this.blue = new System.Windows.Forms.Label();
             this.green = new System.Windows.Forms.Label();
             this.red = new System.Windows.Forms.Label();
@@ -74,8 +70,6 @@ namespace Arduino_LED_Strip_Controller
             this.Tabs.SuspendLayout();
             this.Main.SuspendLayout();
             this.Settings.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.midCutoff)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.bassCutoff)).BeginInit();
             this.SuspendLayout();
             // 
             // comPort
@@ -217,10 +211,6 @@ namespace Arduino_LED_Strip_Controller
             // 
             // Settings
             // 
-            this.Settings.Controls.Add(this.midCutoff);
-            this.Settings.Controls.Add(this.midCutoffLabel);
-            this.Settings.Controls.Add(this.bassCutoff);
-            this.Settings.Controls.Add(this.bassCutoffLabel);
             this.Settings.Controls.Add(this.blue);
             this.Settings.Controls.Add(this.green);
             this.Settings.Controls.Add(this.red);
@@ -254,68 +244,6 @@ namespace Arduino_LED_Strip_Controller
             this.Settings.Text = "Settings";
             this.Settings.UseVisualStyleBackColor = true;
             // 
-            // midCutoff
-            // 
-            this.midCutoff.Location = new System.Drawing.Point(10, 338);
-            this.midCutoff.Maximum = new decimal(new int[] {
-            25000,
-            0,
-            0,
-            0});
-            this.midCutoff.Minimum = new decimal(new int[] {
-            20,
-            0,
-            0,
-            0});
-            this.midCutoff.Name = "midCutoff";
-            this.midCutoff.Size = new System.Drawing.Size(120, 20);
-            this.midCutoff.TabIndex = 31;
-            this.midCutoff.Value = new decimal(new int[] {
-            20,
-            0,
-            0,
-            0});
-            // 
-            // midCutoffLabel
-            // 
-            this.midCutoffLabel.AutoSize = true;
-            this.midCutoffLabel.Location = new System.Drawing.Point(7, 322);
-            this.midCutoffLabel.Name = "midCutoffLabel";
-            this.midCutoffLabel.Size = new System.Drawing.Size(76, 13);
-            this.midCutoffLabel.TabIndex = 30;
-            this.midCutoffLabel.Text = "Mid cutoff (Hz)";
-            // 
-            // bassCutoff
-            // 
-            this.bassCutoff.Location = new System.Drawing.Point(10, 299);
-            this.bassCutoff.Maximum = new decimal(new int[] {
-            25000,
-            0,
-            0,
-            0});
-            this.bassCutoff.Minimum = new decimal(new int[] {
-            20,
-            0,
-            0,
-            0});
-            this.bassCutoff.Name = "bassCutoff";
-            this.bassCutoff.Size = new System.Drawing.Size(120, 20);
-            this.bassCutoff.TabIndex = 29;
-            this.bassCutoff.Value = new decimal(new int[] {
-            20,
-            0,
-            0,
-            0});
-            // 
-            // bassCutoffLabel
-            // 
-            this.bassCutoffLabel.AutoSize = true;
-            this.bassCutoffLabel.Location = new System.Drawing.Point(7, 283);
-            this.bassCutoffLabel.Name = "bassCutoffLabel";
-            this.bassCutoffLabel.Size = new System.Drawing.Size(82, 13);
-            this.bassCutoffLabel.TabIndex = 27;
-            this.bassCutoffLabel.Text = "Bass cutoff (Hz)";
-            // 
             // blue
             // 
             this.blue.AutoSize = true;
@@ -348,9 +276,9 @@ namespace Arduino_LED_Strip_Controller
             this.treble.AutoSize = true;
             this.treble.Location = new System.Drawing.Point(98, 192);
             this.treble.Name = "treble";
-            this.treble.Size = new System.Drawing.Size(37, 13);
+            this.treble.Size = new System.Drawing.Size(84, 13);
             this.treble.TabIndex = 22;
-            this.treble.Text = "Treble";
+            this.treble.Text = "High Percussion";
             // 
             // mid
             // 
@@ -535,6 +463,7 @@ namespace Arduino_LED_Strip_Controller
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.Name = "Form1";
             this.Text = "Arduino LED Strip Controller";
+            this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Form1_FormClosing);
             this.Load += new System.EventHandler(this.Form1_Load);
             this.Resize += new System.EventHandler(this.Form1_Resize);
             this.Tabs.ResumeLayout(false);
@@ -542,8 +471,6 @@ namespace Arduino_LED_Strip_Controller
             this.Main.PerformLayout();
             this.Settings.ResumeLayout(false);
             this.Settings.PerformLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.midCutoff)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.bassCutoff)).EndInit();
             this.ResumeLayout(false);
 
         }
@@ -584,10 +511,6 @@ namespace Arduino_LED_Strip_Controller
         private System.Windows.Forms.Label generalLabel;
         private System.Windows.Forms.Label audioSyncLabel;
         private System.Windows.Forms.Label screenSyncLabel;
-        private System.Windows.Forms.Label bassCutoffLabel;
-        private System.Windows.Forms.NumericUpDown bassCutoff;
-        private System.Windows.Forms.NumericUpDown midCutoff;
-        private System.Windows.Forms.Label midCutoffLabel;
         private System.Windows.Forms.Panel colorDisplay;
     }
 }
