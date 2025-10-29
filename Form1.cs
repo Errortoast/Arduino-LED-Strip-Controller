@@ -37,7 +37,7 @@ namespace Arduino_LED_Strip_Controller
         private double smoothedBass = 0;
         private double smoothedMid = 0;
         private double smoothedTreble = 0;
-        private const double SMOOTHING_ALPHA = 0.2; // 0 < alpha < 1
+        private const double SMOOTHING_ALPHA = 0.4; // 0 < alpha < 1
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
@@ -670,9 +670,25 @@ namespace Arduino_LED_Strip_Controller
             smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
 
             // Map to color channels
-            int b = (int)Clamp(smoothedBass*5000, 0, 255);
-            int m = (int)Clamp(smoothedMid*1000, 0, 255);
-            int t = (int)Clamp(smoothedTreble*1000, 0, 255);
+            int b = (int)Clamp(smoothedBass*7000, 0, 255);
+            int m = (int)Clamp(smoothedMid*14000, 0, 255);
+            int t = (int)Clamp(smoothedTreble*20000, 0, 255);
+
+            int smallestValue = Math.Min(b, Math.Min(m, t));
+
+            // Set the variable holding the smallest value to 0
+            if (b == smallestValue)
+            {
+                b = 0;
+            }
+            else if (m == smallestValue)
+            {
+                m = 0;
+            }
+            else
+            {
+                t = 0;
+            }
 
             sendColorToArduino(Color.FromArgb(redBass.Checked ? b : redMid.Checked ? m : redTreble.Checked ? t : 0, greenBass.Checked ? b : greenMid.Checked ? m : greenTreble.Checked ? t : 0, blueBass.Checked ? b : blueMid.Checked ? m : blueTreble.Checked ? t : 0));
         }
