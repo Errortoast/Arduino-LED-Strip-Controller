@@ -37,7 +37,7 @@ namespace Arduino_LED_Strip_Controller
         private double smoothedBass = 0;
         private double smoothedMid = 0;
         private double smoothedTreble = 0;
-        private const double SMOOTHING_ALPHA = 0.4; // 0 < alpha < 1
+        private const double SMOOTHING_ALPHA = 0.6; // 0 < alpha < 1
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
@@ -643,17 +643,17 @@ namespace Arduino_LED_Strip_Controller
                 double freq = i * resolution;
                 double magnitude = Math.Sqrt(fftBuffer[i].X * fftBuffer[i].X + fftBuffer[i].Y * fftBuffer[i].Y);
 
-                if (freq > 40 && freq <= 80) //bass frequency range
+                if (freq > 50 && freq <= 125) //bass frequency range
                 {
                     bassEnergy += magnitude;
                     bassCount++;
                 }
-                else if (freq > 150 && freq <= 1000) //mid frequency range
+                else if (freq > 250 && freq <= 2000) //mid frequency range
                 {
                     midEnergy += magnitude;
                     midCount++;
                 }
-                else if (freq > 3000 && freq <= 4000) //treble frequency range
+                else if (freq > 5000 && freq <= 6000) //treble frequency range
                 {
                     trebleEnergy += magnitude;
                     trebleCount++;
@@ -665,14 +665,14 @@ namespace Arduino_LED_Strip_Controller
             if (trebleCount > 0) trebleEnergy /= trebleCount;
 
             // Exponential smoothing
-            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - SMOOTHING_ALPHA) * bassEnergy;
+            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - 0.3) * bassEnergy;
             smoothedMid = SMOOTHING_ALPHA * smoothedMid + (1 - SMOOTHING_ALPHA) * midEnergy;
             smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
 
             // Map to color channels
-            int b = (int)Clamp(smoothedBass*7000, 0, 255);
-            int m = (int)Clamp(smoothedMid*14000, 0, 255);
-            int t = (int)Clamp(smoothedTreble*20000, 0, 255);
+            int b = (int)Clamp(Math.Pow(smoothedBass*5000/255,2)*255, 0, 255);
+            int m = (int)Clamp(Math.Pow(smoothedMid*34000/255,3)*255, 0, 255);
+            int t = (int)Clamp(Math.Pow(smoothedTreble*44000/255,3)*255, 0, 255);
 
             int smallestValue = Math.Min(b, Math.Min(m, t));
 
