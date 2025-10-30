@@ -34,10 +34,6 @@ namespace Arduino_LED_Strip_Controller
         // FFT buffers
         private NAudio.Dsp.Complex[] fftBuffer = new NAudio.Dsp.Complex[FFT_SIZE];
 
-        // Smoothing state for bass, mid, treble
-        private double smoothedBass = 0;
-        private double smoothedMid = 0;
-        private double smoothedTreble = 0;
         private const double SMOOTHING_ALPHA = 0.6; // 0 < alpha < 1
 
         private WasapiLoopbackCapture loopbackCapture;
@@ -55,6 +51,12 @@ namespace Arduino_LED_Strip_Controller
         private double[] dataFFT = null;       // temp fft magnitudes per-frame
 
         private WaveFormat currentWaveFormat;
+
+        // gamma and gain tuned for visibility ---
+        double gainB = 1.6;
+        double gainM = 1.2;
+        double gainH = 1.0;
+        double gamma = 1.8;
         #endregion
 
         private SerialPort serialPort;
@@ -532,7 +534,7 @@ namespace Arduino_LED_Strip_Controller
         #endregion
 
         #region screen
-        private Color GetDownscaledAverageColor(Bitmap source, int factor)
+        private Color GetAverageColor(Bitmap source, int factor)
         {
             var data = source.LockBits(
                 new Rectangle(0, 0, source.Width, source.Height),
@@ -579,7 +581,7 @@ namespace Arduino_LED_Strip_Controller
 
         void OnScreenUpdated(object sender, OnScreenUpdatedEventArgs e)
         {
-            averageColor = GetDownscaledAverageColor(e.Bitmap, downscaleFactor);
+            averageColor = GetAverageColor(e.Bitmap, downscaleFactor);
             sendColorToArduino(averageColor);
             e.Bitmap.Dispose();
         }
@@ -716,7 +718,7 @@ namespace Arduino_LED_Strip_Controller
             // --- Frequency-to-index resolution ---
             double resolution = (double)currentWaveFormat.SampleRate / fftPoints; // Hz per bin
 
-            // define ranges similar to earlier suggestion but using index ranges
+            // define ranges
             int bassStart = Math.Max(0, (int)Math.Floor(20.0 / resolution));
             int bassLen = Math.Max(1, (int)Math.Floor(250.0 / resolution));  // number of bins to sum
             int midStart = Math.Max(0, (int)Math.Floor(250.0 / resolution));
@@ -785,16 +787,10 @@ namespace Arduino_LED_Strip_Controller
             highNorm = highNorm / sum;
 
             // small floor so LEDs never go totally off unless input is silent
-            const double FLOOR = 0.03;
-            bassNorm = Math.Max(bassNorm, FLOOR * (smBass > 0 ? 1.0 : 0.0));
-            midNorm = Math.Max(midNorm, FLOOR * (smMid > 0 ? 1.0 : 0.0));
-            highNorm = Math.Max(highNorm, FLOOR * (smHigh > 0 ? 1.0 : 0.0));
-
-            // --- Map to 0..255 with gamma and gain tuned for visibility ---
-            double gainB = 1.6;
-            double gainM = 1.2;
-            double gainH = 1.0;
-            double gamma = 1.8;
+            //const double FLOOR = 0.03;
+            //bassNorm = Math.Max(bassNorm, FLOOR * (smBass > 0 ? 1.0 : 0.0));
+            //midNorm = Math.Max(midNorm, FLOOR * (smMid > 0 ? 1.0 : 0.0));
+            //highNorm = Math.Max(highNorm, FLOOR * (smHigh > 0 ? 1.0 : 0.0));
 
             int outB = (int)Clamp(Math.Pow(bassNorm * gainB * (useOutput ? 1.4 : 1), gamma) * 255.0, 0, 255);
             int outM = (int)Clamp(Math.Pow(midNorm * gainM * (useOutput ? 1.7 : 1), gamma) * 255.0, 0, 255);
@@ -808,7 +804,6 @@ namespace Arduino_LED_Strip_Controller
             // final send
             sendColorToArduino(Color.FromArgb(R, G, B));
         }
-
 
         private float HammingWindow(int i, int n)
         {
