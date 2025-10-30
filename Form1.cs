@@ -170,6 +170,7 @@ namespace Arduino_LED_Strip_Controller
             blueBass.Checked = audioColorChannels[6];
             blueMid.Checked = audioColorChannels[7];
             blueTreble.Checked = audioColorChannels[8];
+            useSpeakersChk.Checked = useSpeakers;
             Console.WriteLine("Settings imported");
             #endregion
 
@@ -635,61 +636,78 @@ namespace Arduino_LED_Strip_Controller
 
         private void ProcessFFT(byte[] audioBuffer, int bytesRecorded, bool useOutput)
         {
-            if (currentWaveFormat == null) return; // safety
+            if (currentWaveFormat == null || bytesRecorded <= 0) return;
 
-            // --- Convert to 16-bit mono samples ---
-            int bytesPerSample = currentWaveFormat.BitsPerSample / 8;
+            // --- Safe format detection ---
+            WaveFormatEncoding encoding = currentWaveFormat.Encoding;
+            int bits = currentWaveFormat.BitsPerSample;
             int channels = currentWaveFormat.Channels;
-            int samples = bytesRecorded / (bytesPerSample * channels);
-            if (samples <= 0) return;
+            int bytesPerSample = bits / 8;
 
-            // pick FFT size as largest power of two <= samples but cap at FFT_SIZE
+            // Defensive: handle loopback (float) and input (PCM)
+            bool isFloat = encoding == WaveFormatEncoding.IeeeFloat || bits == 32;
+            bool isPcm = encoding == WaveFormatEncoding.Pcm || bits == 16;
+
+            // Fallback if unknown
+            if (!isFloat && !isPcm)
+            {
+                Console.WriteLine($"Unsupported format: {encoding}, {bits} bits");
+                return;
+            }
+
+            // --- Prepare FFT size ---
+            int samples = bytesRecorded / (bytesPerSample * channels);
             int fftPoints = 1;
-            while (fftPoints * 2 <= samples && fftPoints * 2 <= FFT_SIZE) fftPoints *= 2;
-            if (fftPoints < 256) fftPoints = 256; // ensure reasonable minimum
+            while (fftPoints * 2 <= samples && fftPoints * 2 <= FFT_SIZE)
+                fftPoints *= 2;
+            if (fftPoints < 256) fftPoints = 256;
 
             var fftFull = new NAudio.Dsp.Complex[fftPoints];
 
-            // Fill pcm->windowed values. Support 16-bit PCM and 32-bit float
-            bool isFloat = currentWaveFormat.Encoding == WaveFormatEncoding.IeeeFloat || bytesPerSample == 4;
+            // --- Convert to mono + apply Hamming window ---
             for (int i = 0; i < fftPoints; i++)
             {
                 float sample = 0f;
                 if (i < samples)
                 {
                     int baseIdx = i * bytesPerSample * channels;
-                    if (isFloat)
+                    float sum1 = 0f;
+
+                    for (int ch = 0; ch < channels; ch++)
                     {
-                        float accum = 0f;
-                        for (int ch = 0; ch < channels; ch++)
-                            accum += BitConverter.ToSingle(audioBuffer, baseIdx + ch * 4);
-                        sample = accum / channels;
+                        int offset = baseIdx + ch * bytesPerSample;
+
+                        if (isFloat)
+                        {
+                            // Guard against out-of-range reads
+                            if (offset + 4 <= audioBuffer.Length)
+                                sum1 += BitConverter.ToSingle(audioBuffer, offset);
+                        }
+                        else
+                        {
+                            if (offset + 2 <= audioBuffer.Length)
+                                sum1 += BitConverter.ToInt16(audioBuffer, offset) / 32768f;
+                        }
                     }
-                    else
-                    {
-                        int accum = 0;
-                        for (int ch = 0; ch < channels; ch++)
-                            accum += BitConverter.ToInt16(audioBuffer, baseIdx + ch * 2);
-                        sample = accum / (32768f * channels);
-                    }
+
+                    sample = sum1 / channels;
                 }
 
-                // Hamming window (same as Bassinator)
-                float windowed = (float)(sample * (0.54 - 0.46 * Math.Cos(2 * Math.PI * i / (fftPoints - 1))));
-                fftFull[i].X = windowed;
-                fftFull[i].Y = 0;
+                float window = (float)(0.54 - 0.46 * Math.Cos(2 * Math.PI * i / (fftPoints - 1)));
+                fftFull[i].X = sample * window;
+                fftFull[i].Y = 0f;
             }
 
             // --- FFT ---
             NAudio.Dsp.FastFourierTransform.FFT(true, (int)Math.Log(fftPoints, 2), fftFull);
 
-            // --- Magnitudes: copy to dataFFT (half) as Bassinator did ---
+            // --- Magnitudes: copy to dataFFT (half) ---
             int half = fftPoints / 2;
             if (dataFFT == null || dataFFT.Length != half) dataFFT = new double[half];
 
             for (int i = 0; i < half; i++)
             {
-                // mirror-sum like Bassinator to get symmetric energy
+                // mirror-sum to get symmetric energy
                 double left = Math.Abs(fftFull[i].X) + Math.Abs(fftFull[i].Y);
                 double right = Math.Abs(fftFull[fftPoints - i - 1].X) + Math.Abs(fftFull[fftPoints - i - 1].Y);
                 dataFFT[i] = left + right;
@@ -716,7 +734,7 @@ namespace Arduino_LED_Strip_Controller
             midEnergy = midEnergy / Math.Max(1, Math.Min(midLen, half - midStart));
             highEnergy = highEnergy / Math.Max(1, Math.Min(highLen, half - highStart));
 
-            // --- Update smoothing queues (Bassinator style) ---
+            // --- Update smoothing queues ---
             void EnqueueAndTrim(Queue<double> q, double v, int limit)
             {
                 q.Enqueue(v);
@@ -731,7 +749,7 @@ namespace Arduino_LED_Strip_Controller
             try { devicePeak = GetSelectedOutputDevice()?.AudioMeterInformation?.MasterPeakValue ?? 0.0; } catch { devicePeak = 0.0; }
             EnqueueAndTrim(volumeQueue, devicePeak, Math.Max(1, volumeSmoothnessRate));
 
-            // compute averages (GetSmoothness equivalent)
+            // compute averages
             double Avg(Queue<double> q)
             {
                 if (q.Count == 0) return 0.0;
@@ -778,9 +796,9 @@ namespace Arduino_LED_Strip_Controller
             double gainH = 1.0;
             double gamma = 1.8;
 
-            int outB = (int)Clamp(Math.Pow(bassNorm * gainB, gamma) * 255.0, 0, 255);
-            int outM = (int)Clamp(Math.Pow(midNorm * gainM, gamma) * 255.0, 0, 255);
-            int outH = (int)Clamp(Math.Pow(highNorm * gainH, gamma) * 255.0, 0, 255);
+            int outB = (int)Clamp(Math.Pow(bassNorm * gainB * (useOutput ? 1.4 : 1), gamma) * 255.0, 0, 255);
+            int outM = (int)Clamp(Math.Pow(midNorm * gainM * (useOutput ? 1.7 : 1), gamma) * 255.0, 0, 255);
+            int outH = (int)Clamp(Math.Pow(highNorm * gainH * (useOutput?2.3:1), gamma) * 255.0, 0, 255);
 
             // --- Map bands to RGB respecting user checkboxes ---
             int R = (redBass.Checked ? outB : 0) | (redMid.Checked ? outM : 0) | (redTreble.Checked ? outH : 0);
@@ -789,9 +807,6 @@ namespace Arduino_LED_Strip_Controller
 
             // final send
             sendColorToArduino(Color.FromArgb(R, G, B));
-
-            // optional debug lines you can enable while tuning:
-            // Debug.WriteLine($"smBass:{smBass:F6} peakBass:{peakBass:F6} bassNorm:{bassNorm:F3} outB:{outB}");
         }
 
 
