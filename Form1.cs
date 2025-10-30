@@ -15,6 +15,7 @@ using System.IO.Pipes;
 using System.Text;
 using Microsoft.Win32;
 using System.Threading;
+using System.Linq;
 
 namespace Arduino_LED_Strip_Controller
 {
@@ -41,6 +42,19 @@ namespace Arduino_LED_Strip_Controller
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
+
+        // smoothing queues (Bassinator style)
+        private readonly Queue<double> bassQueue = new Queue<double>();
+        private readonly Queue<double> midQueue = new Queue<double>();
+        private readonly Queue<double> trebleQueue = new Queue<double>();
+        private readonly Queue<double> volumeQueue = new Queue<double>();
+
+        private int pitchSmoothnessRate = 6;   // number of frames to average for pitch (tweak 3..12)
+        private int volumeSmoothnessRate = 6;  // number of frames to average for volume
+
+        private double[] dataFFT = null;       // temp fft magnitudes per-frame
+
+        private WaveFormat currentWaveFormat;
         #endregion
 
         private SerialPort serialPort;
@@ -591,7 +605,8 @@ namespace Arduino_LED_Strip_Controller
             {
                 var device = GetSelectedOutputDevice();
                 loopbackCapture = new WasapiLoopbackCapture(device);
-                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer, useOutput);
+                currentWaveFormat = loopbackCapture.WaveFormat;
+                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer, e.BytesRecorded, useOutput);
                 loopbackCapture.StartRecording();
             }
             else
@@ -601,7 +616,8 @@ namespace Arduino_LED_Strip_Controller
                     DeviceNumber = audioInput.SelectedIndex,
                     WaveFormat = new WaveFormat(44100, 1)
                 };
-                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer, useOutput);
+                currentWaveFormat = waveIn.WaveFormat;
+                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer, e.BytesRecorded, useOutput);
                 waveIn.StartRecording();
             }
         }
@@ -617,81 +633,167 @@ namespace Arduino_LED_Strip_Controller
             waveIn = null;
         }
 
-        private void ProcessFFT(byte[] audioBuffer, bool useOutput)
+        private void ProcessFFT(byte[] audioBuffer, int bytesRecorded, bool useOutput)
         {
-            int sampleCount = Math.Min(audioBuffer.Length / 2, FFT_SIZE);
-            for (int i = 0; i < FFT_SIZE; i++)
+            if (currentWaveFormat == null) return; // safety
+
+            // --- Convert to 16-bit mono samples ---
+            int bytesPerSample = currentWaveFormat.BitsPerSample / 8;
+            int channels = currentWaveFormat.Channels;
+            int samples = bytesRecorded / (bytesPerSample * channels);
+            if (samples <= 0) return;
+
+            // pick FFT size as largest power of two <= samples but cap at FFT_SIZE
+            int fftPoints = 1;
+            while (fftPoints * 2 <= samples && fftPoints * 2 <= FFT_SIZE) fftPoints *= 2;
+            if (fftPoints < 256) fftPoints = 256; // ensure reasonable minimum
+
+            var fftFull = new NAudio.Dsp.Complex[fftPoints];
+
+            // Fill pcm->windowed values. Support 16-bit PCM and 32-bit float
+            bool isFloat = currentWaveFormat.Encoding == WaveFormatEncoding.IeeeFloat || bytesPerSample == 4;
+            for (int i = 0; i < fftPoints; i++)
             {
-                float sample = 0;
-                if (i < sampleCount)
-                    sample = BitConverter.ToInt16(audioBuffer, i * 2) / 32768f;
-
-                // Apply Hamming window
-                float windowed = sample * HammingWindow(i, FFT_SIZE);
-                fftBuffer[i].X = windowed;
-                fftBuffer[i].Y = 0;
-            }
-
-            FastFourierTransform.FFT(true, (int)Math.Log(FFT_SIZE, 2), fftBuffer);
-
-            double bassEnergy = 0, midEnergy = 0, trebleEnergy = 0;
-            int bassCount = 0, midCount = 0, trebleCount = 0;
-            double resolution = (double)SampleRate / FFT_SIZE;
-
-            for (int i = 1; i < FFT_SIZE / 2; i++)
-            {
-                double freq = i * resolution;
-                double magnitude = Math.Sqrt(fftBuffer[i].X * fftBuffer[i].X + fftBuffer[i].Y * fftBuffer[i].Y);
-
-                if (freq > 50 && freq <= 125) //bass frequency range
+                float sample = 0f;
+                if (i < samples)
                 {
-                    bassEnergy += magnitude;
-                    bassCount++;
+                    int baseIdx = i * bytesPerSample * channels;
+                    if (isFloat)
+                    {
+                        float accum = 0f;
+                        for (int ch = 0; ch < channels; ch++)
+                            accum += BitConverter.ToSingle(audioBuffer, baseIdx + ch * 4);
+                        sample = accum / channels;
+                    }
+                    else
+                    {
+                        int accum = 0;
+                        for (int ch = 0; ch < channels; ch++)
+                            accum += BitConverter.ToInt16(audioBuffer, baseIdx + ch * 2);
+                        sample = accum / (32768f * channels);
+                    }
                 }
-                else if (freq > 250 && freq <= 2000) //mid frequency range
-                {
-                    midEnergy += magnitude;
-                    midCount++;
-                }
-                else if (freq > 5000 && freq <= 6000) //treble frequency range
-                {
-                    trebleEnergy += magnitude;
-                    trebleCount++;
-                }
+
+                // Hamming window (same as Bassinator)
+                float windowed = (float)(sample * (0.54 - 0.46 * Math.Cos(2 * Math.PI * i / (fftPoints - 1))));
+                fftFull[i].X = windowed;
+                fftFull[i].Y = 0;
             }
 
-            if (bassCount > 0) bassEnergy /= bassCount;
-            if (midCount > 0) midEnergy /= midCount;
-            if (trebleCount > 0) trebleEnergy /= trebleCount;
+            // --- FFT ---
+            NAudio.Dsp.FastFourierTransform.FFT(true, (int)Math.Log(fftPoints, 2), fftFull);
 
-            // Exponential smoothing
-            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - 0.3) * bassEnergy;
-            smoothedMid = SMOOTHING_ALPHA * smoothedMid + (1 - SMOOTHING_ALPHA) * midEnergy;
-            smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
+            // --- Magnitudes: copy to dataFFT (half) as Bassinator did ---
+            int half = fftPoints / 2;
+            if (dataFFT == null || dataFFT.Length != half) dataFFT = new double[half];
 
-            // Map to color channels
-            int b = (int)Clamp(Math.Pow(smoothedBass*5000/255,2)*255, 0, 255);
-            int m = (int)Clamp(Math.Pow(smoothedMid*34000/255,3)*255, 0, 255);
-            int t = (int)Clamp(Math.Pow(smoothedTreble*44000/255,3)*255, 0, 255);
-
-            int smallestValue = Math.Min(b, Math.Min(m, t));
-
-            // Set the variable holding the smallest value to 0
-            if (b == smallestValue)
+            for (int i = 0; i < half; i++)
             {
-                b = 0;
-            }
-            else if (m == smallestValue)
-            {
-                m = 0;
-            }
-            else
-            {
-                t = 0;
+                // mirror-sum like Bassinator to get symmetric energy
+                double left = Math.Abs(fftFull[i].X) + Math.Abs(fftFull[i].Y);
+                double right = Math.Abs(fftFull[fftPoints - i - 1].X) + Math.Abs(fftFull[fftPoints - i - 1].Y);
+                dataFFT[i] = left + right;
             }
 
-            sendColorToArduino(Color.FromArgb(redBass.Checked ? b : redMid.Checked ? m : redTreble.Checked ? t : 0, greenBass.Checked ? b : greenMid.Checked ? m : greenTreble.Checked ? t : 0, blueBass.Checked ? b : blueMid.Checked ? m : blueTreble.Checked ? t : 0));
+            // --- Frequency-to-index resolution ---
+            double resolution = (double)currentWaveFormat.SampleRate / fftPoints; // Hz per bin
+
+            // define ranges similar to earlier suggestion but using index ranges
+            int bassStart = Math.Max(0, (int)Math.Floor(20.0 / resolution));
+            int bassLen = Math.Max(1, (int)Math.Floor(250.0 / resolution));  // number of bins to sum
+            int midStart = Math.Max(0, (int)Math.Floor(250.0 / resolution));
+            int midLen = Math.Max(1, (int)Math.Floor(4000.0 / resolution) - (int)Math.Floor(250.0 / resolution));
+            int highStart = Math.Max(0, (int)Math.Floor(4000.0 / resolution));
+            int highLen = Math.Max(1, Math.Min(half - 1, (int)Math.Floor(16000.0 / resolution)) - (int)Math.Floor(4000.0 / resolution) + 1);
+
+            // --- Compute simple average energies for each band ---
+            double bassEnergy = 0, midEnergy = 0, highEnergy = 0;
+            for (int i = bassStart; i < Math.Min(half, bassStart + bassLen); i++) bassEnergy += dataFFT[i];
+            for (int i = midStart; i < Math.Min(half, midStart + midLen); i++) midEnergy += dataFFT[i];
+            for (int i = highStart; i < Math.Min(half, highStart + highLen); i++) highEnergy += dataFFT[i];
+
+            bassEnergy = bassEnergy / Math.Max(1, Math.Min(bassLen, half - bassStart));
+            midEnergy = midEnergy / Math.Max(1, Math.Min(midLen, half - midStart));
+            highEnergy = highEnergy / Math.Max(1, Math.Min(highLen, half - highStart));
+
+            // --- Update smoothing queues (Bassinator style) ---
+            void EnqueueAndTrim(Queue<double> q, double v, int limit)
+            {
+                q.Enqueue(v);
+                while (q.Count > limit) q.Dequeue();
+            }
+            EnqueueAndTrim(bassQueue, bassEnergy, Math.Max(1, pitchSmoothnessRate));
+            EnqueueAndTrim(midQueue, midEnergy, Math.Max(1, pitchSmoothnessRate));
+            EnqueueAndTrim(trebleQueue, highEnergy, Math.Max(1, pitchSmoothnessRate));
+
+            // --- Volume smoothing using device peak if available ---
+            double devicePeak = 0.0;
+            try { devicePeak = GetSelectedOutputDevice()?.AudioMeterInformation?.MasterPeakValue ?? 0.0; } catch { devicePeak = 0.0; }
+            EnqueueAndTrim(volumeQueue, devicePeak, Math.Max(1, volumeSmoothnessRate));
+
+            // compute averages (GetSmoothness equivalent)
+            double Avg(Queue<double> q)
+            {
+                if (q.Count == 0) return 0.0;
+                double s = 0;
+                foreach (var x in q) s += x;
+                return s / q.Count;
+            }
+
+            double smBass = Avg(bassQueue);
+            double smMid = Avg(midQueue);
+            double smHigh = Avg(trebleQueue);
+            double smVol = Avg(volumeQueue);
+
+            // --- Adaptive normalization: scale by recent max of each band to avoid tiny divisors ---
+            // Use max of queue as local peak estimate
+            double peakBass = bassQueue.Count > 0 ? bassQueue.Max() : 1e-6;
+            double peakMid = midQueue.Count > 0 ? midQueue.Max() : 1e-6;
+            double peakHigh = trebleQueue.Count > 0 ? trebleQueue.Max() : 1e-6;
+
+            // avoid zero
+            peakBass = Math.Max(peakBass, 1e-8);
+            peakMid = Math.Max(peakMid, 1e-8);
+            peakHigh = Math.Max(peakHigh, 1e-8);
+
+            double bassNorm = smBass / peakBass;
+            double midNorm = smMid / peakMid;
+            double highNorm = smHigh / peakHigh;
+
+            // optional global normalization by summed energy to favor hue over brightness
+            double sum = bassNorm + midNorm + highNorm + 1e-9;
+            bassNorm = bassNorm / sum;
+            midNorm = midNorm / sum;
+            highNorm = highNorm / sum;
+
+            // small floor so LEDs never go totally off unless input is silent
+            const double FLOOR = 0.03;
+            bassNorm = Math.Max(bassNorm, FLOOR * (smBass > 0 ? 1.0 : 0.0));
+            midNorm = Math.Max(midNorm, FLOOR * (smMid > 0 ? 1.0 : 0.0));
+            highNorm = Math.Max(highNorm, FLOOR * (smHigh > 0 ? 1.0 : 0.0));
+
+            // --- Map to 0..255 with gamma and gain tuned for visibility ---
+            double gainB = 1.6;
+            double gainM = 1.2;
+            double gainH = 1.0;
+            double gamma = 1.8;
+
+            int outB = (int)Clamp(Math.Pow(bassNorm * gainB, gamma) * 255.0, 0, 255);
+            int outM = (int)Clamp(Math.Pow(midNorm * gainM, gamma) * 255.0, 0, 255);
+            int outH = (int)Clamp(Math.Pow(highNorm * gainH, gamma) * 255.0, 0, 255);
+
+            // --- Map bands to RGB respecting user checkboxes ---
+            int R = (redBass.Checked ? outB : 0) | (redMid.Checked ? outM : 0) | (redTreble.Checked ? outH : 0);
+            int G = (greenBass.Checked ? outB : 0) | (greenMid.Checked ? outM : 0) | (greenTreble.Checked ? outH : 0);
+            int B = (blueBass.Checked ? outB : 0) | (blueMid.Checked ? outM : 0) | (blueTreble.Checked ? outH : 0);
+
+            // final send
+            sendColorToArduino(Color.FromArgb(R, G, B));
+
+            // optional debug lines you can enable while tuning:
+            // Debug.WriteLine($"smBass:{smBass:F6} peakBass:{peakBass:F6} bassNorm:{bassNorm:F3} outB:{outB}");
         }
+
 
         private float HammingWindow(int i, int n)
         {
