@@ -15,7 +15,6 @@ using System.IO.Pipes;
 using System.Text;
 using Microsoft.Win32;
 using System.Threading;
-using System.Linq;
 
 namespace Arduino_LED_Strip_Controller
 {
@@ -34,29 +33,17 @@ namespace Arduino_LED_Strip_Controller
         // FFT buffers
         private NAudio.Dsp.Complex[] fftBuffer = new NAudio.Dsp.Complex[FFT_SIZE];
 
+        // Smoothing state for bass, mid, treble
+        private double smoothedBass = 0;
+        private double smoothedMid = 0;
+        private double smoothedTreble = 0;
         private const double SMOOTHING_ALPHA = 0.6; // 0 < alpha < 1
+
+        private int bassFrequency = 100; // in Hz
+        private int midFrequency = 4000;
 
         private WasapiLoopbackCapture loopbackCapture;
         private WaveInEvent waveIn;
-
-        // smoothing queues (Bassinator style)
-        private readonly Queue<double> bassQueue = new Queue<double>();
-        private readonly Queue<double> midQueue = new Queue<double>();
-        private readonly Queue<double> trebleQueue = new Queue<double>();
-        private readonly Queue<double> volumeQueue = new Queue<double>();
-
-        private int pitchSmoothnessRate = 6;   // number of frames to average for pitch (tweak 3..12)
-        private int volumeSmoothnessRate = 6;  // number of frames to average for volume
-
-        private double[] dataFFT = null;       // temp fft magnitudes per-frame
-
-        private WaveFormat currentWaveFormat;
-
-        // gamma and gain tuned for visibility ---
-        double gainB = 1.6;
-        double gainM = 1.2;
-        double gainH = 1.0;
-        double gamma = 1.8;
         #endregion
 
         private SerialPort serialPort;
@@ -139,7 +126,7 @@ namespace Arduino_LED_Strip_Controller
             else
             {
                 string[] lines = File.ReadAllLines(Application.StartupPath + "\\Settings.txt");
-                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length !=0 && lines.Length >= 6)
+                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length != 0 && lines.Length >= 6)
                 {
                     const string colonCharacter = ":";
 
@@ -159,7 +146,7 @@ namespace Arduino_LED_Strip_Controller
                     useSpeakers = useSpeakersFromSettingsFile[1] == "True" ? true : false;
 
                     string[] audioColorChannelsFromSettingsFile = lines[5].Split(colonCharacter[0]);
-                    audioColorChannels = new bool[] {audioColorChannelsFromSettingsFile[1]=="True"?true:false, audioColorChannelsFromSettingsFile[2] == "True" ? true : false, audioColorChannelsFromSettingsFile[3] == "True" ? true : false, audioColorChannelsFromSettingsFile[4] == "True" ? true : false, audioColorChannelsFromSettingsFile[5] == "True" ? true : false, audioColorChannelsFromSettingsFile[6] == "True" ? true : false, audioColorChannelsFromSettingsFile[7] == "True" ? true : false, audioColorChannelsFromSettingsFile[8] == "True" ? true : false, audioColorChannelsFromSettingsFile[9] == "True" ? true : false};
+                    audioColorChannels = new bool[] { audioColorChannelsFromSettingsFile[1] == "True" ? true : false, audioColorChannelsFromSettingsFile[2] == "True" ? true : false, audioColorChannelsFromSettingsFile[3] == "True" ? true : false, audioColorChannelsFromSettingsFile[4] == "True" ? true : false, audioColorChannelsFromSettingsFile[5] == "True" ? true : false, audioColorChannelsFromSettingsFile[6] == "True" ? true : false, audioColorChannelsFromSettingsFile[7] == "True" ? true : false, audioColorChannelsFromSettingsFile[8] == "True" ? true : false, audioColorChannelsFromSettingsFile[9] == "True" ? true : false };
                 }
 
             }
@@ -172,7 +159,6 @@ namespace Arduino_LED_Strip_Controller
             blueBass.Checked = audioColorChannels[6];
             blueMid.Checked = audioColorChannels[7];
             blueTreble.Checked = audioColorChannels[8];
-            useSpeakersChk.Checked = useSpeakers;
             Console.WriteLine("Settings imported");
             #endregion
 
@@ -213,7 +199,8 @@ namespace Arduino_LED_Strip_Controller
             Console.WriteLine("Populating COM port list");
             string[] ports = SerialPort.GetPortNames();
             comPort.Items.AddRange(ports);
-            try {
+            try
+            {
                 comPort.SelectedIndex = defaultComPort;
             }
             catch
@@ -261,7 +248,8 @@ namespace Arduino_LED_Strip_Controller
             serialPort.StopBits = StopBits.One;
             serialPort.Parity = Parity.None;
 
-            try{
+            try
+            {
                 // Open Serial Port
                 serialPort.Open();
             }
@@ -273,7 +261,7 @@ namespace Arduino_LED_Strip_Controller
 
         private void saveAndClose_Click(object sender, EventArgs e)
         {
-            audioColorChannels = new bool[] {redBass.Checked, redMid.Checked, redTreble.Checked, greenBass.Checked, greenMid.Checked, greenTreble.Checked, blueBass.Checked, blueMid.Checked, blueTreble.Checked};
+            audioColorChannels = new bool[] { redBass.Checked, redMid.Checked, redTreble.Checked, greenBass.Checked, greenMid.Checked, greenTreble.Checked, blueBass.Checked, blueMid.Checked, blueTreble.Checked };
             Console.WriteLine("Writing settings to file");
             using (StreamWriter writer = new StreamWriter(Application.StartupPath + "\\Settings.txt"))
             {
@@ -472,7 +460,7 @@ namespace Arduino_LED_Strip_Controller
             Console.WriteLine("Opening color dialog");
             using (ColorDialog colorDialog = new ColorDialog())
             {
-                if(colorDialog.ShowDialog() == DialogResult.OK)
+                if (colorDialog.ShowDialog() == DialogResult.OK)
                 {
                     Console.WriteLine("Sending color to arduino");
                     sendColorToArduino(colorDialog.Color);
@@ -534,7 +522,7 @@ namespace Arduino_LED_Strip_Controller
         #endregion
 
         #region screen
-        private Color GetAverageColor(Bitmap source, int factor)
+        private Color GetDownscaledAverageColor(Bitmap source, int factor)
         {
             var data = source.LockBits(
                 new Rectangle(0, 0, source.Width, source.Height),
@@ -581,7 +569,7 @@ namespace Arduino_LED_Strip_Controller
 
         void OnScreenUpdated(object sender, OnScreenUpdatedEventArgs e)
         {
-            averageColor = GetAverageColor(e.Bitmap, downscaleFactor);
+            averageColor = GetDownscaledAverageColor(e.Bitmap, downscaleFactor);
             sendColorToArduino(averageColor);
             e.Bitmap.Dispose();
         }
@@ -608,8 +596,7 @@ namespace Arduino_LED_Strip_Controller
             {
                 var device = GetSelectedOutputDevice();
                 loopbackCapture = new WasapiLoopbackCapture(device);
-                currentWaveFormat = loopbackCapture.WaveFormat;
-                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer, e.BytesRecorded, useOutput);
+                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer);
                 loopbackCapture.StartRecording();
             }
             else
@@ -619,8 +606,7 @@ namespace Arduino_LED_Strip_Controller
                     DeviceNumber = audioInput.SelectedIndex,
                     WaveFormat = new WaveFormat(44100, 1)
                 };
-                currentWaveFormat = waveIn.WaveFormat;
-                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer, e.BytesRecorded, useOutput);
+                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer);
                 waveIn.StartRecording();
             }
         }
@@ -634,175 +620,69 @@ namespace Arduino_LED_Strip_Controller
             waveIn?.Dispose();
             loopbackCapture = null;
             waveIn = null;
+
+            // Reset smoothing state
+            smoothedBass = smoothedMid = smoothedTreble = 0;
         }
 
-        private void ProcessFFT(byte[] audioBuffer, int bytesRecorded, bool useOutput)
+        private void ProcessFFT(byte[] audioBuffer)
         {
-            if (currentWaveFormat == null || bytesRecorded <= 0) return;
-
-            // --- Safe format detection ---
-            WaveFormatEncoding encoding = currentWaveFormat.Encoding;
-            int bits = currentWaveFormat.BitsPerSample;
-            int channels = currentWaveFormat.Channels;
-            int bytesPerSample = bits / 8;
-
-            // Defensive: handle loopback (float) and input (PCM)
-            bool isFloat = encoding == WaveFormatEncoding.IeeeFloat || bits == 32;
-            bool isPcm = encoding == WaveFormatEncoding.Pcm || bits == 16;
-
-            // Fallback if unknown
-            if (!isFloat && !isPcm)
+            int sampleCount = Math.Min(audioBuffer.Length / 2, FFT_SIZE);
+            for (int i = 0; i < FFT_SIZE; i++)
             {
-                Console.WriteLine($"Unsupported format: {encoding}, {bits} bits");
-                return;
+                float sample = 0;
+                if (i < sampleCount)
+                    sample = BitConverter.ToInt16(audioBuffer, i * 2) / 32768f;
+
+                // Apply Hamming window
+                float windowed = sample * HammingWindow(i, FFT_SIZE);
+                fftBuffer[i].X = windowed;
+                fftBuffer[i].Y = 0;
             }
 
-            // --- Prepare FFT size ---
-            int samples = bytesRecorded / (bytesPerSample * channels);
-            int fftPoints = 1;
-            while (fftPoints * 2 <= samples && fftPoints * 2 <= FFT_SIZE)
-                fftPoints *= 2;
-            if (fftPoints < 256) fftPoints = 256;
+            FastFourierTransform.FFT(true, (int)Math.Log(FFT_SIZE, 2), fftBuffer);
 
-            var fftFull = new NAudio.Dsp.Complex[fftPoints];
+            double bassEnergy = 0, midEnergy = 0, trebleEnergy = 0;
+            int bassCount = 0, midCount = 0, trebleCount = 0;
+            double resolution = (double)SampleRate / FFT_SIZE;
 
-            // --- Convert to mono + apply Hamming window ---
-            for (int i = 0; i < fftPoints; i++)
+            for (int i = 1; i < FFT_SIZE / 2; i++)
             {
-                float sample = 0f;
-                if (i < samples)
+                double freq = i * resolution;
+                double magnitude = Math.Sqrt(fftBuffer[i].X * fftBuffer[i].X + fftBuffer[i].Y * fftBuffer[i].Y);
+
+                if (freq > 40 && freq <= bassFrequency)
                 {
-                    int baseIdx = i * bytesPerSample * channels;
-                    float sum1 = 0f;
-
-                    for (int ch = 0; ch < channels; ch++)
-                    {
-                        int offset = baseIdx + ch * bytesPerSample;
-
-                        if (isFloat)
-                        {
-                            // Guard against out-of-range reads
-                            if (offset + 4 <= audioBuffer.Length)
-                                sum1 += BitConverter.ToSingle(audioBuffer, offset);
-                        }
-                        else
-                        {
-                            if (offset + 2 <= audioBuffer.Length)
-                                sum1 += BitConverter.ToInt16(audioBuffer, offset) / 32768f;
-                        }
-                    }
-
-                    sample = sum1 / channels;
+                    bassEnergy += magnitude;
+                    bassCount++;
                 }
-
-                float window = (float)(0.54 - 0.46 * Math.Cos(2 * Math.PI * i / (fftPoints - 1)));
-                fftFull[i].X = sample * window;
-                fftFull[i].Y = 0f;
+                else if (freq > bassFrequency && freq <= midFrequency)
+                {
+                    midEnergy += magnitude;
+                    midCount++;
+                }
+                else if (freq > midFrequency)
+                {
+                    trebleEnergy += magnitude;
+                    trebleCount++;
+                }
             }
 
-            // --- FFT ---
-            NAudio.Dsp.FastFourierTransform.FFT(true, (int)Math.Log(fftPoints, 2), fftFull);
+            if (bassCount > 0) bassEnergy /= bassCount;
+            if (midCount > 0) midEnergy /= midCount;
+            if (trebleCount > 0) trebleEnergy /= trebleCount;
 
-            // --- Magnitudes: copy to dataFFT (half) ---
-            int half = fftPoints / 2;
-            if (dataFFT == null || dataFFT.Length != half) dataFFT = new double[half];
+            // Exponential smoothing
+            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - SMOOTHING_ALPHA) * bassEnergy;
+            smoothedMid = SMOOTHING_ALPHA * smoothedMid + (1 - SMOOTHING_ALPHA) * midEnergy;
+            smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
 
-            for (int i = 0; i < half; i++)
-            {
-                // mirror-sum to get symmetric energy
-                double left = Math.Abs(fftFull[i].X) + Math.Abs(fftFull[i].Y);
-                double right = Math.Abs(fftFull[fftPoints - i - 1].X) + Math.Abs(fftFull[fftPoints - i - 1].Y);
-                dataFFT[i] = left + right;
-            }
+            // Map to color channels
+            int b = (int)Clamp((float)(Math.Pow((smoothedBass * 11000) / 255, 3) * 255), 0, 255);
+            int m = (int)Clamp((float)(Math.Pow((smoothedMid * 30000) / 255, 2) * 255), 0, 255);
+            int t = (int)Clamp((float)(Math.Pow((smoothedTreble * 40000) / 255, 4) * 255), 0, 255);
 
-            // --- Frequency-to-index resolution ---
-            double resolution = (double)currentWaveFormat.SampleRate / fftPoints; // Hz per bin
-
-            // define ranges
-            int bassStart = Math.Max(0, (int)Math.Floor(20.0 / resolution));
-            int bassLen = Math.Max(1, (int)Math.Floor(250.0 / resolution));  // number of bins to sum
-            int midStart = Math.Max(0, (int)Math.Floor(250.0 / resolution));
-            int midLen = Math.Max(1, (int)Math.Floor(4000.0 / resolution) - (int)Math.Floor(250.0 / resolution));
-            int highStart = Math.Max(0, (int)Math.Floor(4000.0 / resolution));
-            int highLen = Math.Max(1, Math.Min(half - 1, (int)Math.Floor(16000.0 / resolution)) - (int)Math.Floor(4000.0 / resolution) + 1);
-
-            // --- Compute simple average energies for each band ---
-            double bassEnergy = 0, midEnergy = 0, highEnergy = 0;
-            for (int i = bassStart; i < Math.Min(half, bassStart + bassLen); i++) bassEnergy += dataFFT[i];
-            for (int i = midStart; i < Math.Min(half, midStart + midLen); i++) midEnergy += dataFFT[i];
-            for (int i = highStart; i < Math.Min(half, highStart + highLen); i++) highEnergy += dataFFT[i];
-
-            bassEnergy = bassEnergy / Math.Max(1, Math.Min(bassLen, half - bassStart));
-            midEnergy = midEnergy / Math.Max(1, Math.Min(midLen, half - midStart));
-            highEnergy = highEnergy / Math.Max(1, Math.Min(highLen, half - highStart));
-
-            // --- Update smoothing queues ---
-            void EnqueueAndTrim(Queue<double> q, double v, int limit)
-            {
-                q.Enqueue(v);
-                while (q.Count > limit) q.Dequeue();
-            }
-            EnqueueAndTrim(bassQueue, bassEnergy, Math.Max(1, pitchSmoothnessRate));
-            EnqueueAndTrim(midQueue, midEnergy, Math.Max(1, pitchSmoothnessRate));
-            EnqueueAndTrim(trebleQueue, highEnergy, Math.Max(1, pitchSmoothnessRate));
-
-            // --- Volume smoothing using device peak if available ---
-            double devicePeak = 0.0;
-            try { devicePeak = GetSelectedOutputDevice()?.AudioMeterInformation?.MasterPeakValue ?? 0.0; } catch { devicePeak = 0.0; }
-            EnqueueAndTrim(volumeQueue, devicePeak, Math.Max(1, volumeSmoothnessRate));
-
-            // compute averages
-            double Avg(Queue<double> q)
-            {
-                if (q.Count == 0) return 0.0;
-                double s = 0;
-                foreach (var x in q) s += x;
-                return s / q.Count;
-            }
-
-            double smBass = Avg(bassQueue);
-            double smMid = Avg(midQueue);
-            double smHigh = Avg(trebleQueue);
-            double smVol = Avg(volumeQueue);
-
-            // --- Adaptive normalization: scale by recent max of each band to avoid tiny divisors ---
-            // Use max of queue as local peak estimate
-            double peakBass = bassQueue.Count > 0 ? bassQueue.Max() : 1e-6;
-            double peakMid = midQueue.Count > 0 ? midQueue.Max() : 1e-6;
-            double peakHigh = trebleQueue.Count > 0 ? trebleQueue.Max() : 1e-6;
-
-            // avoid zero
-            peakBass = Math.Max(peakBass, 1e-8);
-            peakMid = Math.Max(peakMid, 1e-8);
-            peakHigh = Math.Max(peakHigh, 1e-8);
-
-            double bassNorm = smBass / peakBass;
-            double midNorm = smMid / peakMid;
-            double highNorm = smHigh / peakHigh;
-
-            // optional global normalization by summed energy to favor hue over brightness
-            double sum = bassNorm + midNorm + highNorm + 1e-9;
-            bassNorm = bassNorm / sum;
-            midNorm = midNorm / sum;
-            highNorm = highNorm / sum;
-
-            // small floor so LEDs never go totally off unless input is silent
-            //const double FLOOR = 0.03;
-            //bassNorm = Math.Max(bassNorm, FLOOR * (smBass > 0 ? 1.0 : 0.0));
-            //midNorm = Math.Max(midNorm, FLOOR * (smMid > 0 ? 1.0 : 0.0));
-            //highNorm = Math.Max(highNorm, FLOOR * (smHigh > 0 ? 1.0 : 0.0));
-
-            int outB = (int)Clamp(Math.Pow(bassNorm * gainB * (useOutput ? 1.4 : 1), gamma) * 255.0, 0, 255);
-            int outM = (int)Clamp(Math.Pow(midNorm * gainM * (useOutput ? 1.7 : 1), gamma) * 255.0, 0, 255);
-            int outH = (int)Clamp(Math.Pow(highNorm * gainH * (useOutput?2.3:1), gamma) * 255.0, 0, 255);
-
-            // --- Map bands to RGB respecting user checkboxes ---
-            int R = (redBass.Checked ? outB : 0) | (redMid.Checked ? outM : 0) | (redTreble.Checked ? outH : 0);
-            int G = (greenBass.Checked ? outB : 0) | (greenMid.Checked ? outM : 0) | (greenTreble.Checked ? outH : 0);
-            int B = (blueBass.Checked ? outB : 0) | (blueMid.Checked ? outM : 0) | (blueTreble.Checked ? outH : 0);
-
-            // final send
-            sendColorToArduino(Color.FromArgb(R, G, B));
+            sendColorToArduino(Color.FromArgb(redBass.Checked ? b : redMid.Checked ? m : redTreble.Checked ? t : 0, greenBass.Checked ? b : greenMid.Checked ? m : greenTreble.Checked ? t : 0, blueBass.Checked ? b : blueMid.Checked ? m : blueTreble.Checked ? t : 0));
         }
 
         private float HammingWindow(int i, int n)
@@ -909,7 +789,7 @@ namespace Arduino_LED_Strip_Controller
                 {
                     form.fade_Click(null, EventArgs.Empty);
                 }
-                else if (message.Split("|"[0])[0]=="color")
+                else if (message.Split("|"[0])[0] == "color")
                 {
                     Console.WriteLine("Stopping other processes");
                     form.StopMusicSync();
