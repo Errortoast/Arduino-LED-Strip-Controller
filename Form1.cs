@@ -52,11 +52,11 @@ namespace Arduino_LED_Strip_Controller
 
         private WaveFormat currentWaveFormat;
 
-        // gamma and gain tuned for visibility ---
+        // gamma and gain ---
         double gainB = 1.6;
         double gainM = 1.2;
         double gainH = 1.0;
-        double gamma = 1.8;
+        double gamma = 2;
         #endregion
 
         private SerialPort serialPort;
