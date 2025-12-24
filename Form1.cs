@@ -1,4 +1,5 @@
-﻿using System;
+﻿#region Import Packages
+using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Windows.Forms;
@@ -7,45 +8,18 @@ using ScreenCapturerNS;
 using System.IO;
 using System.Diagnostics;
 using System.Threading.Tasks;
-using NAudio.CoreAudioApi;
-using NAudio.Wave;
-using NAudio.Dsp;
 using System.Collections.Generic;
 using System.IO.Pipes;
 using System.Text;
 using Microsoft.Win32;
 using System.Threading;
+#endregion
 
 namespace Arduino_LED_Strip_Controller
 {
     public partial class Form1 : Form
     {
         #region Global Variables
-        #region audio
-        private List<MMDevice> renderDevices = new List<MMDevice>();
-        private List<MMDevice> inputDevices = new List<MMDevice>();
-
-        private MMDeviceEnumerator deviceEnumerator;
-
-        private const int FFT_SIZE = 2048; // Must be a power of 2
-        private const int SampleRate = 44100; // Should match your audio format
-
-        // FFT buffers
-        private NAudio.Dsp.Complex[] fftBuffer = new NAudio.Dsp.Complex[FFT_SIZE];
-
-        // Smoothing state for bass, mid, treble
-        private double smoothedBass = 0;
-        private double smoothedMid = 0;
-        private double smoothedTreble = 0;
-        private const double SMOOTHING_ALPHA = 0.6; // 0 < alpha < 1
-
-        private int bassFrequency = 100; // in Hz
-        private int midFrequency = 4000;
-
-        private WasapiLoopbackCapture loopbackCapture;
-        private WaveInEvent waveIn;
-        #endregion
-
         private SerialPort serialPort;
         public Color averageColor;
         int downscaleFactor = 24;
@@ -54,10 +28,6 @@ namespace Arduino_LED_Strip_Controller
 
         int defaultComPort = 0;
         int defaultMonitor = 0;
-        int defaultAudioInput = 0;
-        int defaultAudioOutput = 0;
-        bool useSpeakers = true;
-        bool[] audioColorChannels = { true, false, false, false, true, false, false, false, true };
 
         private PipeServer pipeServer;
 
@@ -126,7 +96,7 @@ namespace Arduino_LED_Strip_Controller
             else
             {
                 string[] lines = File.ReadAllLines(Application.StartupPath + "\\Settings.txt");
-                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length != 0 && lines.Length >= 6)
+                if (new FileInfo(Application.StartupPath + "\\Settings.txt").Length != 0 && lines.Length >= 2)
                 {
                     const string colonCharacter = ":";
 
@@ -135,64 +105,10 @@ namespace Arduino_LED_Strip_Controller
 
                     string[] monitorFromSettingsFile = lines[1].Split(colonCharacter[0]);
                     defaultMonitor = Convert.ToInt32(monitorFromSettingsFile[1]);
-
-                    string[] audioInputFromSettingsFile = lines[2].Split(colonCharacter[0]);
-                    defaultAudioInput = Convert.ToInt32(audioInputFromSettingsFile[1]);
-
-                    string[] audioOutputFromSettingsFile = lines[3].Split(colonCharacter[0]);
-                    defaultAudioOutput = Convert.ToInt32(audioOutputFromSettingsFile[1]);
-
-                    string[] useSpeakersFromSettingsFile = lines[4].Split(colonCharacter[0]);
-                    useSpeakers = useSpeakersFromSettingsFile[1] == "True" ? true : false;
-
-                    string[] audioColorChannelsFromSettingsFile = lines[5].Split(colonCharacter[0]);
-                    audioColorChannels = new bool[] { audioColorChannelsFromSettingsFile[1] == "True" ? true : false, audioColorChannelsFromSettingsFile[2] == "True" ? true : false, audioColorChannelsFromSettingsFile[3] == "True" ? true : false, audioColorChannelsFromSettingsFile[4] == "True" ? true : false, audioColorChannelsFromSettingsFile[5] == "True" ? true : false, audioColorChannelsFromSettingsFile[6] == "True" ? true : false, audioColorChannelsFromSettingsFile[7] == "True" ? true : false, audioColorChannelsFromSettingsFile[8] == "True" ? true : false, audioColorChannelsFromSettingsFile[9] == "True" ? true : false };
-                }
+                    }
 
             }
-            redBass.Checked = audioColorChannels[0];
-            redMid.Checked = audioColorChannels[1];
-            redTreble.Checked = audioColorChannels[2];
-            greenBass.Checked = audioColorChannels[3];
-            greenMid.Checked = audioColorChannels[4];
-            greenTreble.Checked = audioColorChannels[5];
-            blueBass.Checked = audioColorChannels[6];
-            blueMid.Checked = audioColorChannels[7];
-            blueTreble.Checked = audioColorChannels[8];
             Console.WriteLine("Settings imported");
-            #endregion
-
-            #region audio
-            deviceEnumerator = new MMDeviceEnumerator();
-
-            Console.WriteLine("Populating audio device list");
-            var outputDevices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-            foreach (var device in outputDevices)
-            {
-                audioOutput.Items.Add(device.FriendlyName);
-                renderDevices.Add(device);
-            }
-            var captureDevices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
-            foreach (var device in captureDevices)
-            {
-                audioInput.Items.Add(device.FriendlyName);
-                inputDevices.Add(device);
-            }
-
-            if (useSpeakers)
-            {
-                audioInput.Hide();
-                audioOutput.Show();
-            }
-            else
-            {
-                audioOutput.Hide();
-                audioInput.Show();
-            }
-
-            audioInput.SelectedIndex = defaultAudioInput;
-            audioOutput.SelectedIndex = defaultAudioOutput;
-            Console.WriteLine("Audio setup complete");
             #endregion
 
             #region combo boxes
@@ -231,7 +147,6 @@ namespace Arduino_LED_Strip_Controller
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             ScreenCapturer.StopCapture();
-            StopMusicSync();
             stopFade();
             pipeServer?.Stop();
             sendColorToArduino(Color.FromArgb(0, 0, 0));
@@ -250,7 +165,6 @@ namespace Arduino_LED_Strip_Controller
 
             try
             {
-                // Open Serial Port
                 serialPort.Open();
             }
             catch
@@ -261,55 +175,24 @@ namespace Arduino_LED_Strip_Controller
 
         private void saveAndClose_Click(object sender, EventArgs e)
         {
-            audioColorChannels = new bool[] { redBass.Checked, redMid.Checked, redTreble.Checked, greenBass.Checked, greenMid.Checked, greenTreble.Checked, blueBass.Checked, blueMid.Checked, blueTreble.Checked };
             Console.WriteLine("Writing settings to file");
             using (StreamWriter writer = new StreamWriter(Application.StartupPath + "\\Settings.txt"))
             {
                 writer.Flush();
                 writer.WriteLine("Default COM port:" + comPort.SelectedIndex.ToString());
                 writer.WriteLine("Default monitor:" + screenSelection.SelectedIndex.ToString());
-                writer.WriteLine("Default audio input:" + audioInput.SelectedIndex.ToString());
-                writer.WriteLine("Default audio output:" + audioOutput.SelectedIndex.ToString());
-                writer.WriteLine("Use speakers for audio sync:" + useSpeakers.ToString());
-                writer.WriteLine($"Audio color channels:{audioColorChannels[0]}:{audioColorChannels[1]}:{audioColorChannels[2]}:{audioColorChannels[3]}:{audioColorChannels[4]}:{audioColorChannels[5]}:{audioColorChannels[6]}:{audioColorChannels[7]}:{audioColorChannels[8]}:");
             }
             Console.WriteLine("Settings written to file");
-        }
-
-        private void useSpeakersChk_CheckedChanged(object sender, EventArgs e)
-        {
-            useSpeakers = useSpeakersChk.Checked;
-            if (useSpeakers)
-            {
-                audioInput.Hide();
-                audioOutput.Show();
-            }
-            else
-            {
-                audioOutput.Hide();
-                audioInput.Show();
-            }
         }
 
         public void screenSync_Click(object sender, EventArgs e)
         {
             Console.WriteLine("Stopping other processes");
             ScreenCapturer.StopCapture();
-            StopMusicSync();
             stopFade();
             currentMode = "screenSync";
             Console.WriteLine("Starting screen sync");
             ScreenCapturer.StartCapture(screenSelection.SelectedIndex);
-        }
-
-        public void musicSync_Click(object sender, EventArgs e)
-        {
-            Console.WriteLine("Stopping other processes");
-            StopMusicSync();
-            stopFade();
-            ScreenCapturer.StopCapture();
-            Console.WriteLine("Starting audio sync");
-            StartMusicSync(useSpeakers);
         }
 
         private void notifyIcon1_DoubleClick(object sender, EventArgs e)
@@ -324,7 +207,6 @@ namespace Arduino_LED_Strip_Controller
             if (e.Mode == PowerModes.Suspend)
             {
                 Console.WriteLine("System suspending…");
-                StopMusicSync();
                 stopFade();
                 ScreenCapturer.StopCapture();
 
@@ -340,110 +222,10 @@ namespace Arduino_LED_Strip_Controller
             }
         }
 
-        private void redBass_CheckedChanged(object sender, EventArgs e)
-        {
-            if (redBass.Checked == true)
-            {
-                greenBass.Checked = false;
-                blueBass.Checked = false;
-                redMid.Checked = false;
-                redTreble.Checked = false;
-            }
-        }
-
-        private void greenBass_CheckedChanged(object sender, EventArgs e)
-        {
-            if (greenBass.Checked == true)
-            {
-                redBass.Checked = false;
-                blueBass.Checked = false;
-                greenMid.Checked = false;
-                greenTreble.Checked = false;
-            }
-        }
-
-        private void blueBass_CheckedChanged(object sender, EventArgs e)
-        {
-            if (blueBass.Checked == true)
-            {
-                redBass.Checked = false;
-                greenBass.Checked = false;
-                blueMid.Checked = false;
-                blueTreble.Checked = false;
-            }
-        }
-
-        private void redMid_CheckedChanged(object sender, EventArgs e)
-        {
-            if (redMid.Checked == true)
-            {
-                greenMid.Checked = false;
-                blueMid.Checked = false;
-                redBass.Checked = false;
-                redTreble.Checked = false;
-            }
-        }
-
-        private void greenMid_CheckedChanged(object sender, EventArgs e)
-        {
-            if (greenMid.Checked == true)
-            {
-                redMid.Checked = false;
-                blueMid.Checked = false;
-                greenBass.Checked = false;
-                greenTreble.Checked = false;
-            }
-        }
-
-        private void blueMid_CheckedChanged(object sender, EventArgs e)
-        {
-            if (blueMid.Checked == true)
-            {
-                redMid.Checked = false;
-                greenMid.Checked = false;
-                blueBass.Checked = false;
-                blueTreble.Checked = false;
-            }
-        }
-
-        private void redTreble_CheckedChanged(object sender, EventArgs e)
-        {
-            if (redTreble.Checked == true)
-            {
-                greenTreble.Checked = false;
-                blueTreble.Checked = false;
-                redBass.Checked = false;
-                redMid.Checked = false;
-            }
-        }
-
-        private void greenTreble_CheckedChanged(object sender, EventArgs e)
-        {
-            if (greenTreble.Checked == true)
-            {
-                redTreble.Checked = false;
-                blueTreble.Checked = false;
-                greenBass.Checked = false;
-                greenMid.Checked = false;
-            }
-        }
-
-        private void blueTreble_CheckedChanged(object sender, EventArgs e)
-        {
-            if (blueTreble.Checked == true)
-            {
-                redTreble.Checked = false;
-                greenTreble.Checked = false;
-                blueBass.Checked = false;
-                blueMid.Checked = false;
-            }
-        }
-
         public void fade_Click(object sender, EventArgs e)
         {
             Console.WriteLine("Stopping other processes");
             stopFade();
-            StopMusicSync();
             ScreenCapturer.StopCapture();
             currentMode = "fade";
             Console.WriteLine("Starting color fade");
@@ -454,7 +236,6 @@ namespace Arduino_LED_Strip_Controller
         {
             Console.WriteLine("Stopping other processes");
             stopFade();
-            StopMusicSync();
             ScreenCapturer.StopCapture();
             currentMode = "color";
             Console.WriteLine("Opening color dialog");
@@ -575,122 +356,6 @@ namespace Arduino_LED_Strip_Controller
         }
         #endregion
 
-        #region audio
-        private MMDevice GetSelectedInputDevice()
-        {
-            int index = audioInput.SelectedIndex;
-            return (index >= 0 && index < inputDevices.Count) ? inputDevices[index] : null;
-        }
-
-        private MMDevice GetSelectedOutputDevice()
-        {
-            int index = audioOutput.SelectedIndex;
-            return (index >= 0 && index < renderDevices.Count) ? renderDevices[index] : null;
-        }
-
-        private void StartMusicSync(bool useOutput)
-        {
-            StopMusicSync();
-            currentMode = "audioSync";
-            if (useOutput)
-            {
-                var device = GetSelectedOutputDevice();
-                loopbackCapture = new WasapiLoopbackCapture(device);
-                loopbackCapture.DataAvailable += (s, e) => ProcessFFT(e.Buffer);
-                loopbackCapture.StartRecording();
-            }
-            else
-            {
-                waveIn = new WaveInEvent
-                {
-                    DeviceNumber = audioInput.SelectedIndex,
-                    WaveFormat = new WaveFormat(44100, 1)
-                };
-                waveIn.DataAvailable += (s, e) => ProcessFFT(e.Buffer);
-                waveIn.StartRecording();
-            }
-        }
-
-        public void StopMusicSync()
-        {
-            currentMode = "audioSync";
-            loopbackCapture?.StopRecording();
-            waveIn?.StopRecording();
-            loopbackCapture?.Dispose();
-            waveIn?.Dispose();
-            loopbackCapture = null;
-            waveIn = null;
-
-            // Reset smoothing state
-            smoothedBass = smoothedMid = smoothedTreble = 0;
-        }
-
-        private void ProcessFFT(byte[] audioBuffer)
-        {
-            int sampleCount = Math.Min(audioBuffer.Length / 2, FFT_SIZE);
-            for (int i = 0; i < FFT_SIZE; i++)
-            {
-                float sample = 0;
-                if (i < sampleCount)
-                    sample = BitConverter.ToInt16(audioBuffer, i * 2) / 32768f;
-
-                // Apply Hamming window
-                float windowed = sample * HammingWindow(i, FFT_SIZE);
-                fftBuffer[i].X = windowed;
-                fftBuffer[i].Y = 0;
-            }
-
-            FastFourierTransform.FFT(true, (int)Math.Log(FFT_SIZE, 2), fftBuffer);
-
-            double bassEnergy = 0, midEnergy = 0, trebleEnergy = 0;
-            int bassCount = 0, midCount = 0, trebleCount = 0;
-            double resolution = (double)SampleRate / FFT_SIZE;
-
-            for (int i = 1; i < FFT_SIZE / 2; i++)
-            {
-                double freq = i * resolution;
-                double magnitude = Math.Sqrt(fftBuffer[i].X * fftBuffer[i].X + fftBuffer[i].Y * fftBuffer[i].Y);
-
-                if (freq > 40 && freq <= bassFrequency)
-                {
-                    bassEnergy += magnitude;
-                    bassCount++;
-                }
-                else if (freq > bassFrequency && freq <= midFrequency)
-                {
-                    midEnergy += magnitude;
-                    midCount++;
-                }
-                else if (freq > midFrequency)
-                {
-                    trebleEnergy += magnitude;
-                    trebleCount++;
-                }
-            }
-
-            if (bassCount > 0) bassEnergy /= bassCount;
-            if (midCount > 0) midEnergy /= midCount;
-            if (trebleCount > 0) trebleEnergy /= trebleCount;
-
-            // Exponential smoothing
-            smoothedBass = SMOOTHING_ALPHA * smoothedBass + (1 - SMOOTHING_ALPHA) * bassEnergy;
-            smoothedMid = SMOOTHING_ALPHA * smoothedMid + (1 - SMOOTHING_ALPHA) * midEnergy;
-            smoothedTreble = SMOOTHING_ALPHA * smoothedTreble + (1 - SMOOTHING_ALPHA) * trebleEnergy;
-
-            // Map to color channels
-            int b = (int)Clamp((float)(Math.Pow((smoothedBass * 11000) / 255, 3) * 255), 0, 255);
-            int m = (int)Clamp((float)(Math.Pow((smoothedMid * 30000) / 255, 2) * 255), 0, 255);
-            int t = (int)Clamp((float)(Math.Pow((smoothedTreble * 40000) / 255, 4) * 255), 0, 255);
-
-            sendColorToArduino(Color.FromArgb(redBass.Checked ? b : redMid.Checked ? m : redTreble.Checked ? t : 0, greenBass.Checked ? b : greenMid.Checked ? m : greenTreble.Checked ? t : 0, blueBass.Checked ? b : blueMid.Checked ? m : blueTreble.Checked ? t : 0));
-        }
-
-        private float HammingWindow(int i, int n)
-        {
-            return 0.54f - 0.46f * (float)Math.Cos((2 * Math.PI * i) / (n - 1));
-        }
-        #endregion
-
         #region fade
         public void startFade()
         {
@@ -699,6 +364,7 @@ namespace Arduino_LED_Strip_Controller
             fadeTimer.Tick += FadeTimer_Tick;
             fadeTimer.Start();
         }
+
         public void stopFade()
         {
             if (fadeTimer != null)
@@ -706,6 +372,7 @@ namespace Arduino_LED_Strip_Controller
                 fadeTimer.Stop();
             }
         }
+
         void FadeTimer_Tick(object sender, EventArgs e)
         {
             fadeProgress += fadeSpeed;
@@ -777,11 +444,7 @@ namespace Arduino_LED_Strip_Controller
             form.BeginInvoke(new Action(() =>
             {
                 Debug.WriteLine(message);
-                if (message == "audiosync")
-                {
-                    form.musicSync_Click(null, EventArgs.Empty);
-                }
-                else if (message == "screensync")
+                if (message == "screensync")
                 {
                     form.screenSync_Click(null, EventArgs.Empty);
                 }
@@ -792,7 +455,6 @@ namespace Arduino_LED_Strip_Controller
                 else if (message.Split("|"[0])[0] == "color")
                 {
                     Console.WriteLine("Stopping other processes");
-                    form.StopMusicSync();
                     ScreenCapturer.StopCapture();
                     form.stopFade();
                     form.currentMode = "color";
