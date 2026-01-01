@@ -23,7 +23,7 @@ namespace Arduino_LED_Strip_Controller
         private SerialPort serialPort;
         public Color averageColor;
         int downscaleFactor = 24;
-        const int FrameIntervalMs = 16;     // ~60 FPS
+        const int FrameIntervalMs = 16; // ~60 FPS
         DateTime lastScreenSyncTime = DateTime.MinValue;
 
         int defaultComPort = 0;
@@ -247,6 +247,28 @@ namespace Arduino_LED_Strip_Controller
                     sendColorToArduino(colorDialog.Color);
                 }
             }
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.F13))
+            {
+                Console.WriteLine("Stopping other processes");
+                stopFade();
+                ScreenCapturer.StopCapture();
+                currentMode = "color";
+                sendColorToArduino(Color.FromArgb(0, 0, 0));
+            }
+            else if (keyData == (Keys.Control | Keys.F14))
+            {
+                Console.WriteLine("Stopping other processes");
+                stopFade();
+                ScreenCapturer.StopCapture();
+                currentMode = "fade";
+                Console.WriteLine("Starting color fade");
+                startFade();
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
         #endregion
 
